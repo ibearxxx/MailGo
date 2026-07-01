@@ -108,6 +108,22 @@ function setCached(key: string, url: string | null) {
   }
 }
 
+function safeAvatarURL(value: string | null | undefined): string | null {
+  if (!value) return null;
+  if (/^data:image\/(?:png|jpeg|gif|webp);base64,[a-z0-9+/=\s]+$/i.test(value)) {
+    return value;
+  }
+  try {
+    const parsed = new URL(value, window.location.origin);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return null;
+    }
+    return parsed.href;
+  } catch {
+    return null;
+  }
+}
+
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 
 /**
@@ -279,10 +295,11 @@ export function Avatar({ name, email, size = 36, src, tagColor, className, style
   }
 
   // Have a working image URL (cached or freshly resolved) — render it.
-  if (resolvedUrl) {
+  const imageURL = safeAvatarURL(resolvedUrl);
+  if (imageURL) {
     return (
       <img
-        src={resolvedUrl}
+        src={imageURL}
         alt={name || email || ""}
         width={size}
         height={size}

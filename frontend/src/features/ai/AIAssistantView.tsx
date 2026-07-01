@@ -25,6 +25,7 @@ import { showToast } from "@/stores/toast.store";
 import { cn, formatDateTime } from "@/lib/utils";
 import { Button } from "@/components/ui/Button";
 import { isAIGlobalConfigured } from "@/lib/aiConfigCheck";
+import { secureID } from "@/lib/random";
 import { useIsMobile } from "@/hooks/useBreakpoint";
 
 /* ==========================================================================
@@ -1069,7 +1070,7 @@ function isDefaultChatTitle(title?: string) {
 }
 
 function makeID() {
-  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return secureID();
 }
 
 function titleFromPrompt(prompt: string, fallback?: string) {

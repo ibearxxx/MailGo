@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"log"
 	"mailgo/internal/appclock"
+	"mailgo/internal/authpassword"
 	"mailgo/internal/crypto"
 	"mailgo/internal/database"
 	"mailgo/internal/models"
@@ -141,7 +142,7 @@ func UpdateSetting(w http.ResponseWriter, r *http.Request) {
 // ChangePassword returns an HTTP handler that changes the web login password.
 // The `updater` callback is called with the new password so the auth middleware
 // can update its hash at runtime.
-func ChangePassword(updater interface{ UpdatePassword(string) }) http.HandlerFunc {
+func ChangePassword(updater interface{ UpdatePasswordHash(string) }) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			CurrentPassword string `json:"current_password"`
@@ -164,8 +165,14 @@ func ChangePassword(updater interface{ UpdatePassword(string) }) http.HandlerFun
 			respondError(w, http.StatusInternalServerError, "Failed to read current password")
 			return
 		}
-		if body.CurrentPassword != stored {
+		if !authpassword.Verify(stored, body.CurrentPassword) {
 			respondError(w, http.StatusUnauthorized, "Current password is incorrect")
+			return
+		}
+
+		newHash, err := authpassword.Hash(body.NewPassword)
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "Failed to hash new password")
 			return
 		}
 
@@ -173,14 +180,14 @@ func ChangePassword(updater interface{ UpdatePassword(string) }) http.HandlerFun
 		if _, err := database.DB.Exec(
 			`UPDATE settings SET setting_value = ?, updated_at = CURRENT_TIMESTAMP
 			 WHERE setting_key = 'web_password'`,
-			body.NewPassword,
+			newHash,
 		); err != nil {
 			respondError(w, http.StatusInternalServerError, "Failed to update password")
 			return
 		}
 
 		// Update auth middleware hash at runtime.
-		updater.UpdatePassword(body.NewPassword)
+		updater.UpdatePasswordHash(newHash)
 
 		respondJSON(w, http.StatusOK, map[string]string{"message": "Password changed"})
 	}

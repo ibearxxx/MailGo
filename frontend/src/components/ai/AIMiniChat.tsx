@@ -8,6 +8,7 @@ import { useAppStore } from "@/stores/appStore";
 import { showToast } from "@/stores/toast.store";
 import { isAIGlobalConfigured } from "@/lib/aiConfigCheck";
 import { cn } from "@/lib/utils";
+import { secureID } from "@/lib/random";
 
 type ChatRole = "assistant" | "user";
 
@@ -300,7 +301,7 @@ function makeMsg(role: ChatRole, content: string): ChatMessage {
 }
 
 function makeID() {
-  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return secureID();
 }
 
 function useSettingsAIConfig(settings: { key: string; value: string }[]) {

@@ -1081,6 +1081,9 @@ func deliverSMTP(accountID int64, msg outboundMessage) error {
 	if account.Port == 0 {
 		account.Port = 587
 	}
+	if err := validateOutboundMessage(msg); err != nil {
+		return err
+	}
 	// Fall back to the legacy boolean when encryption is empty.
 	if account.Encryption == "" {
 		if account.UseTLS && account.Port == 465 {
@@ -1218,14 +1221,17 @@ func sendSMTP(account smtpAccount, from string, recipients []string, data []byte
 		if account.Password != "" {
 			plainAuth = smtp.PlainAuth("", account.Username, account.Password, account.Host)
 		}
-		return smtp.SendMail(addr, plainAuth, fromAddr, recipients, data)
+		// The MIME payload has passed validateOutboundMessage; all user-controlled
+		// headers are parsed as RFC 5322 addresses or rejected, and bodies are
+		// quoted-printable encoded by buildMIMEMessage.
+		return smtp.SendMail(addr, plainAuth, fromAddr, recipients, data) // codeql[go/email-injection]
 
 	default:
 		// "starttls" or empty — smtp.SendMail handles STARTTLS upgrade
 		// and authentication automatically. When the server advertises
 		// STARTTLS, smtp.SendMail will upgrade the connection before
 		// authenticating.
-		return smtp.SendMail(addr, auth, fromAddr, recipients, data)
+		return smtp.SendMail(addr, auth, fromAddr, recipients, data) // codeql[go/email-injection]
 	}
 }
 
@@ -1254,7 +1260,7 @@ func runSMTPClient(c *smtp.Client, auth smtp.Auth, from string, recipients []str
 	if err != nil {
 		return fmt.Errorf("DATA: %w", err)
 	}
-	if _, err := w.Write(data); err != nil {
+	if _, err := w.Write(data); err != nil { // codeql[go/email-injection]
 		return fmt.Errorf("DATA write: %w", err)
 	}
 	if err := w.Close(); err != nil {
@@ -1305,17 +1311,14 @@ func writeAttachmentPart(out *bytes.Buffer, boundary string, att attachmentInput
 	if inline {
 		disposition = "inline"
 	}
-	mimeType := att.MimeType
-	if mimeType == "" {
-		mimeType = "application/octet-stream"
-	}
+	mimeType := safeMIMEType(att.MimeType)
 	filename := sanitizeHeader(att.Filename)
 	out.WriteString("--" + boundary + "\r\n")
 	out.WriteString("Content-Type: " + mimeType + "; name=\"" + escapeHeaderParam(filename) + "\"\r\n")
 	out.WriteString("Content-Transfer-Encoding: base64\r\n")
 	out.WriteString("Content-Disposition: " + disposition + "; filename=\"" + escapeHeaderParam(filename) + "\"\r\n")
 	if inline && att.ContentID != "" {
-		out.WriteString("Content-ID: <" + strings.Trim(att.ContentID, "<>") + ">\r\n")
+		out.WriteString("Content-ID: <" + sanitizeContentID(att.ContentID) + ">\r\n")
 	}
 	out.WriteString("\r\n")
 	out.WriteString(wrapBase64(att.DataBase64))
@@ -1363,9 +1366,17 @@ func extractEmail(raw string) string {
 func sanitizeAddressHeaders(items []string) []string {
 	out := make([]string, 0, len(items))
 	for _, item := range items {
-		item = sanitizeHeader(item)
-		if item != "" {
-			out = append(out, item)
+		if strings.ContainsAny(item, "\r\n") {
+			continue
+		}
+		if address, err := mail.ParseAddress(item); err == nil {
+			email := sanitizeEmail(address.Address)
+			if email != "" {
+				out = append(out, (&mail.Address{
+					Name:    sanitizeHeader(address.Name),
+					Address: email,
+				}).String())
+			}
 		}
 	}
 	return out
@@ -1385,12 +1396,62 @@ func sanitizeHeader(value string) string {
 }
 
 func sanitizeEmail(value string) string {
+	if strings.ContainsAny(value, "\r\n") {
+		return ""
+	}
 	value = sanitizeHeader(value)
 	value = strings.Trim(value, "<>")
-	if strings.ContainsAny(value, " \t") {
+	if strings.ContainsAny(value, " \t") || strings.Count(value, "@") != 1 {
+		return ""
+	}
+	parsed, err := mail.ParseAddress(value)
+	if err != nil || !strings.EqualFold(parsed.Address, value) {
 		return ""
 	}
 	return value
+}
+
+func validateOutboundMessage(msg outboundMessage) error {
+	if strings.ContainsAny(msg.FromName+msg.FromAddress+msg.Subject, "\r\n") {
+		return fmt.Errorf("message headers contain forbidden line breaks")
+	}
+	if extractEmail(msg.FromAddress) == "" {
+		return fmt.Errorf("invalid sender address")
+	}
+	for _, group := range [][]string{msg.ToAddresses, msg.CcAddresses, msg.BccAddresses} {
+		for _, raw := range group {
+			if strings.ContainsAny(raw, "\r\n") || extractEmail(raw) == "" {
+				return fmt.Errorf("invalid recipient address")
+			}
+		}
+	}
+	for _, att := range msg.Attachments {
+		if strings.ContainsAny(att.Filename+att.MimeType+att.ContentID, "\r\n") {
+			return fmt.Errorf("attachment headers contain forbidden line breaks")
+		}
+	}
+	return nil
+}
+
+func safeMIMEType(value string) string {
+	mediaType, _, err := mime.ParseMediaType(sanitizeHeader(value))
+	if err != nil || !strings.Contains(mediaType, "/") {
+		return "application/octet-stream"
+	}
+	return mediaType
+}
+
+func sanitizeContentID(value string) string {
+	value = strings.Trim(sanitizeHeader(value), "<>")
+	var out strings.Builder
+	for _, r := range value {
+		if r == '@' || r == '.' || r == '-' || r == '_' ||
+			(r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') {
+			out.WriteRune(r)
+		}
+	}
+	return out.String()
 }
 
 func escapeHeaderParam(value string) string {

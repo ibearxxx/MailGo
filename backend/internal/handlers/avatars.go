@@ -2,15 +2,16 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"crypto/md5"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"io"
 	"log"
 	"mime"
 	"net"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"mailgo/internal/safehttp"
 )
 
 const avatarCacheTTL = 30 * 24 * time.Hour
@@ -127,17 +129,12 @@ func GetGravatarAvatar(w http.ResponseWriter, r *http.Request) {
 	hash := hex.EncodeToString(h[:])
 	gravURL := "https://www.gravatar.com/avatar/" + hash + "?d=404&s=128"
 
-	client := &http.Client{Timeout: 8 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
-		if len(via) >= 5 {
-			return http.ErrUseLastResponse
-		}
-		return nil
-	}}
+	client := safehttp.NewClient(8 * time.Second)
 	req, _ := http.NewRequest(http.MethodGet, gravURL, nil)
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) MailGo/1.0 Safari/537.36")
 	req.Header.Set("Accept", "image/*,*/*;q=0.8")
 
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) // codeql[go/request-forgery] safehttp validates redirects and dialed IPs.
 	if err != nil {
 		_ = os.WriteFile(filepath.Join(cacheDir, key+".miss"), []byte(time.Now().UTC().Format(time.RFC3339)), 0644)
 		http.NotFound(w, r)
@@ -184,7 +181,10 @@ func GetGravatarAvatar(w http.ResponseWriter, r *http.Request) {
 //  3. Google faviconV2 API (returns 200 for real favicons, 404 for unknown domains)
 //  4. DuckDuckGo icon proxy (another reliable fallback)
 func fetchFaviconForDomain(domain string) ([]byte, string, error) {
-	client := &http.Client{Timeout: 8 * time.Second}
+	if err := safehttp.ValidateHostname(context.Background(), domain); err != nil {
+		return nil, "", err
+	}
+	client := safehttp.NewClient(8 * time.Second)
 
 	// Phase 1: Try direct /favicon.ico candidates (fast).
 	for _, candidate := range faviconCandidates(domain) {
@@ -203,13 +203,14 @@ func fetchFaviconForDomain(domain string) ([]byte, string, error) {
 
 	// Phase 3: Google favicon service (new API endpoint) — very reliable.
 	// Returns 200 + real favicon for valid domains, 404 for unknown domains.
-	googleURL := fmt.Sprintf("https://t1.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=http://%s&size=128", domain)
+	googleURL := "https://t1.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=" +
+		neturl.QueryEscape("http://"+domain) + "&size=128"
 	if data, ct, err := probeURL(client, googleURL); err == nil {
 		return data, ct, nil
 	}
 
 	// Phase 4: DuckDuckGo icon proxy.
-	ddgURL := fmt.Sprintf("https://icons.duckduckgo.com/ip3/%s.ico", domain)
+	ddgURL := "https://icons.duckduckgo.com/ip3/" + neturl.PathEscape(domain) + ".ico"
 	if data, ct, err := probeURL(client, ddgURL); err == nil {
 		return data, ct, nil
 	}
@@ -219,10 +220,20 @@ func fetchFaviconForDomain(domain string) ([]byte, string, error) {
 
 // probeURL fetches a single URL and returns the image data if valid.
 func probeURL(client *http.Client, url string) ([]byte, string, error) {
-	req, _ := http.NewRequest(http.MethodGet, url, nil)
+	target, err := neturl.Parse(url)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := safehttp.ValidateURL(context.Background(), target); err != nil {
+		return nil, "", err
+	}
+	req, err := http.NewRequest(http.MethodGet, target.String(), nil)
+	if err != nil {
+		return nil, "", err
+	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) MailGo/1.0 Safari/537.36")
 	req.Header.Set("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) // codeql[go/request-forgery] safehttp validates the URL and dialed IPs.
 	if err != nil {
 		return nil, "", err
 	}
@@ -278,7 +289,7 @@ func fetchFaviconFromHTML(client *http.Client, domain string) ([]byte, string, e
 		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) MailGo/1.0 Safari/537.36")
 		req.Header.Set("Accept", "text/html,*/*")
 
-		resp, err := client.Do(req)
+		resp, err := client.Do(req) // codeql[go/request-forgery] safehttp validates redirects and dialed IPs.
 		if err != nil {
 			continue
 		}
@@ -362,19 +373,7 @@ func rootAvatarDomain(domain string) string {
 }
 
 func isUnsafeAvatarDomain(domain string) bool {
-	if domain == "localhost" || strings.HasPrefix(domain, "localhost.") {
-		return true
-	}
-	ips, err := net.LookupIP(domain)
-	if err != nil {
-		return false
-	}
-	for _, ip := range ips {
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
-			return true
-		}
-	}
-	return false
+	return safehttp.ValidateHostname(context.Background(), domain) != nil
 }
 
 func avatarCacheDir() (string, error) {
@@ -523,12 +522,7 @@ func fetchGravatarForEmail(email string) ([]byte, string, error) {
 	hash := hex.EncodeToString(h[:])
 	gravURL := "https://www.gravatar.com/avatar/" + hash + "?d=404&s=128"
 
-	client := &http.Client{Timeout: 8 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
-		if len(via) >= 5 {
-			return http.ErrUseLastResponse
-		}
-		return nil
-	}}
+	client := safehttp.NewClient(8 * time.Second)
 	req, _ := http.NewRequest(http.MethodGet, gravURL, nil)
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) MailGo/1.0 Safari/537.36")
 	req.Header.Set("Accept", "image/*,*/*;q=0.8")

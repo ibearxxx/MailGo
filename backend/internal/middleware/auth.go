@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -16,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"mailgo/internal/authpassword"
 	"mailgo/internal/database"
 )
 
@@ -26,32 +26,32 @@ type authSession struct {
 }
 
 type TokenAuth struct {
-	passwordHash [32]byte
+	passwordHash string
 	sessionTTL   time.Duration
 	mu           sync.Mutex
 	sessions     map[[32]byte]authSession
 	limiter      loginRateLimiter
 }
 
-func NewTokenAuth(password string) *TokenAuth {
-	return newTokenAuthWithLimiter(password, redisLoginRateLimiter{})
+func NewTokenAuth(passwordHash string) *TokenAuth {
+	return newTokenAuthWithLimiter(passwordHash, redisLoginRateLimiter{})
 }
 
-func newTokenAuthWithLimiter(password string, limiter loginRateLimiter) *TokenAuth {
+func newTokenAuthWithLimiter(passwordHash string, limiter loginRateLimiter) *TokenAuth {
 	return &TokenAuth{
-		passwordHash: sha256.Sum256([]byte(password)),
+		passwordHash: passwordHash,
 		sessionTTL:   14 * 24 * time.Hour,
 		sessions:     make(map[[32]byte]authSession),
 		limiter:      limiter,
 	}
 }
 
-// UpdatePassword changes the password hash at runtime. All existing sessions
+// UpdatePasswordHash changes the password hash at runtime. All existing sessions
 // are preserved — only future logins use the new password.
-func (a *TokenAuth) UpdatePassword(newPassword string) {
+func (a *TokenAuth) UpdatePasswordHash(newPasswordHash string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.passwordHash = sha256.Sum256([]byte(newPassword))
+	a.passwordHash = newPasswordHash
 }
 
 func (a *TokenAuth) Login(w http.ResponseWriter, r *http.Request) {
@@ -81,8 +81,10 @@ func (a *TokenAuth) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	candidate := sha256.Sum256([]byte(body.Password))
-	if subtle.ConstantTimeCompare(candidate[:], a.passwordHash[:]) != 1 {
+	a.mu.Lock()
+	validPassword := authpassword.Verify(a.passwordHash, body.Password)
+	a.mu.Unlock()
+	if !validPassword {
 		failure, err := a.limiter.RecordFailure(r.Context(), ip)
 		if err != nil {
 			writeAuthError(w, http.StatusServiceUnavailable, "Login protection is temporarily unavailable")
@@ -144,7 +146,7 @@ func (a *TokenAuth) Login(w http.ResponseWriter, r *http.Request) {
 		Value:    token,
 		Path:     "/api/v1",
 		HttpOnly: true,
-		Secure:   requestIsSecure(r),
+		Secure:   requestIsSecure(r), // codeql[go/cookie-secure-not-set] Direct HTTP access is an explicit deployment mode.
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   int(a.sessionTTL.Seconds()),
 		Expires:  expiresAt,
@@ -171,7 +173,7 @@ func (a *TokenAuth) Logout(w http.ResponseWriter, r *http.Request) {
 		Value:    "",
 		Path:     "/api/v1",
 		HttpOnly: true,
-		Secure:   requestIsSecure(r),
+		Secure:   requestIsSecure(r), // codeql[go/cookie-secure-not-set] Direct HTTP access is an explicit deployment mode.
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   -1,
 		Expires:  time.Unix(0, 0),
@@ -196,7 +198,7 @@ func (a *TokenAuth) RequireToken(next http.Handler) http.Handler {
 				Value:    "",
 				Path:     "/api/v1",
 				HttpOnly: true,
-				Secure:   requestIsSecure(r),
+				Secure:   requestIsSecure(r), // codeql[go/cookie-secure-not-set] Direct HTTP access is an explicit deployment mode.
 				SameSite: http.SameSiteStrictMode,
 				MaxAge:   -1,
 			})

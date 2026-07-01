@@ -112,11 +112,22 @@ export function MessageList({
     overscan: 6,
   });
 
-  // Scroll selected into view
+  // Scroll a newly selected message into view exactly once. The message array
+  // changes whenever an infinite-query page is appended; without this guard,
+  // that append re-ran scrollToIndex for the existing selection and pulled the
+  // list back toward the top after "load more" completed.
+  const lastAutoScrolledSelectionRef = useRef<number | null>(null);
   useEffect(() => {
-    if (!selectedId) return;
+    if (!selectedId) {
+      lastAutoScrolledSelectionRef.current = null;
+      return;
+    }
+    if (lastAutoScrolledSelectionRef.current === selectedId) return;
     const idx = listItems.findIndex((item) => item.ids.includes(selectedId));
-    if (idx >= 0) virtualizer.scrollToIndex(idx, { align: "auto" });
+    if (idx >= 0) {
+      virtualizer.scrollToIndex(idx, { align: "auto" });
+      lastAutoScrolledSelectionRef.current = selectedId;
+    }
   }, [selectedId, listItems, virtualizer]);
 
   // Infinite scroll: when the user scrolls near the bottom of the list,

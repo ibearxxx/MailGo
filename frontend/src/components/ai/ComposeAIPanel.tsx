@@ -14,6 +14,7 @@ import { aiApi } from "@/lib/api";
 import { useSettingsQuery } from "@/hooks/queries/useSettings";
 import { isAIGlobalConfigured } from "@/lib/aiConfigCheck";
 import { showToast } from "@/stores/toast.store";
+import { secureID } from "@/lib/random";
 
 type ChatRole = "assistant" | "user";
 
@@ -45,7 +46,7 @@ interface ComposeAIPanelProps {
 }
 
 function makeMsg(role: ChatRole, content: string): ChatMessage {
-  return { id: `${Date.now()}-${Math.random().toString(36).slice(2)}`, role, content, createdAt: Date.now() };
+  return { id: secureID(), role, content, createdAt: Date.now() };
 }
 
 function useSettingsAIConfig(settings: { key: string; value: string }[]) {

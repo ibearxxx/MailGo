@@ -521,16 +521,28 @@ export const settingsApi = {
     // is also fired in the same tab via a custom event (browsers only fire
     // `storage` on *other* tabs by default).
     try {
-      if (key === "ai_api_key" || key === "microsoft_client_secret") {
-        localStorage.removeItem(`mailgo-setting:${key}`);
-      } else {
-        localStorage.setItem(`mailgo-setting:${key}`, String(value));
+      if (key === "auto_refresh_enabled") {
+        const safeValue = value === "true" ? "true" : "false";
+        localStorage.setItem("mailgo-setting:auto_refresh_enabled", safeValue);
         window.dispatchEvent(
           new StorageEvent("storage", {
-            key: `mailgo-setting:${key}`,
-            newValue: String(value),
+            key: "mailgo-setting:auto_refresh_enabled",
+            newValue: safeValue,
           }),
         );
+      } else if (key === "check_interval") {
+        const safeValue = String(
+          Math.min(86400, Math.max(30, Number.parseInt(value, 10) || 300)),
+        );
+        localStorage.setItem("mailgo-setting:check_interval", safeValue);
+        window.dispatchEvent(
+          new StorageEvent("storage", {
+            key: "mailgo-setting:check_interval",
+            newValue: safeValue,
+          }),
+        );
+      } else {
+        localStorage.removeItem(`mailgo-setting:${key}`);
       }
     } catch {
       /* ignore — private mode */

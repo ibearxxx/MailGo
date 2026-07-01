@@ -9,11 +9,22 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"mailgo/internal/authpassword"
 )
 
 type fakeLoginLimiter struct {
 	failures map[string]int
 	blocked  map[string]time.Duration
+}
+
+func testPasswordHash(t *testing.T, password string) string {
+	t.Helper()
+	hash, err := authpassword.Hash(password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return hash
 }
 
 func newFakeLoginLimiter() *fakeLoginLimiter {
@@ -43,7 +54,7 @@ func (f *fakeLoginLimiter) ClearFailures(_ context.Context, ip string) error {
 }
 
 func TestTokenAuthLoginAndProtectedRoute(t *testing.T) {
-	auth := newTokenAuthWithLimiter("correct horse battery staple", newFakeLoginLimiter())
+	auth := newTokenAuthWithLimiter(testPasswordHash(t, "correct horse battery staple"), newFakeLoginLimiter())
 
 	bad := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewBufferString(`{"password":"wrong"}`))
 	bad.RemoteAddr = "127.0.0.1:1234"
@@ -128,7 +139,7 @@ func TestTokenAuthLoginAndProtectedRoute(t *testing.T) {
 }
 
 func TestTokenAuthRateLimitsFailures(t *testing.T) {
-	auth := newTokenAuthWithLimiter("secret", newFakeLoginLimiter())
+	auth := newTokenAuthWithLimiter(testPasswordHash(t, "secret"), newFakeLoginLimiter())
 	for i := 0; i < 5; i++ {
 		request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewBufferString(`{"password":"wrong"}`))
 		request.RemoteAddr = "127.0.0.2:1234"

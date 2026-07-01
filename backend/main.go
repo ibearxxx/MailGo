@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"mailgo/internal/authpassword"
 	"mailgo/internal/crypto"
 	"mailgo/internal/database"
 	"mailgo/internal/handlers"
@@ -97,7 +98,7 @@ func main() {
 	// ── Web password ──
 	// Read from database settings table. On first install, generate a random
 	// password and print it to stdout for the admin to note.
-	webPassword := loadOrGenerateWebPassword()
+	webPasswordHash := loadOrGenerateWebPassword()
 
 	// ── Redis ──
 	if err := waitForRedis(); err != nil {
@@ -105,7 +106,7 @@ func main() {
 	}
 	database.SyncProgressResetStale()
 
-	tokenAuth := middleware.NewTokenAuth(webPassword)
+	tokenAuth := middleware.NewTokenAuth(webPasswordHash)
 
 	port := os.Getenv("SERVER_PORT")
 	if port == "" {
@@ -402,7 +403,20 @@ func loadOrGenerateWebPassword() string {
 	).Scan(&pw)
 
 	if err == nil && pw != "" {
-		return pw
+		if authpassword.IsHash(pw) {
+			return pw
+		}
+		hash, hashErr := authpassword.Hash(pw)
+		if hashErr != nil {
+			log.Fatalf("Failed to migrate web password: %v", hashErr)
+		}
+		if _, updateErr := database.DB.Exec(
+			"UPDATE settings SET setting_value = ?, updated_at = CURRENT_TIMESTAMP WHERE setting_key = 'web_password'",
+			hash,
+		); updateErr != nil {
+			log.Fatalf("Failed to store migrated web password: %v", updateErr)
+		}
+		return hash
 	}
 
 	// First install — generate a random password.
@@ -411,12 +425,16 @@ func loadOrGenerateWebPassword() string {
 		log.Fatalf("Failed to generate web password: %v", err)
 	}
 	pw = hex.EncodeToString(raw)[:16]
+	hash, err := authpassword.Hash(pw)
+	if err != nil {
+		log.Fatalf("Failed to hash web password: %v", err)
+	}
 
 	if _, err := database.DB.Exec(
 		`INSERT INTO settings (setting_key, setting_value, updated_at)
 		 VALUES ('web_password', ?, CURRENT_TIMESTAMP)
 		 ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)`,
-		pw,
+		hash,
 	); err != nil {
 		log.Fatalf("Failed to store web password: %v", err)
 	}
@@ -429,7 +447,7 @@ func loadOrGenerateWebPassword() string {
 	fmt.Println("║  You can change this in Settings > Security.                 ║")
 	fmt.Println("╚══════════════════════════════════════════════════════════════╝")
 
-	return pw
+	return hash
 }
 
 // resetPasswordCLI connects to the database, generates a new random password,
@@ -451,12 +469,16 @@ func resetPasswordCLI() {
 		log.Fatalf("Failed to generate password: %v", err)
 	}
 	pw := hex.EncodeToString(raw)[:16]
+	hash, err := authpassword.Hash(pw)
+	if err != nil {
+		log.Fatalf("Failed to hash password: %v", err)
+	}
 
 	if _, err := database.DB.Exec(
 		`INSERT INTO settings (setting_key, setting_value, updated_at)
 		 VALUES ('web_password', ?, CURRENT_TIMESTAMP)
 		 ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)`,
-		pw,
+		hash,
 	); err != nil {
 		log.Fatalf("Failed to store password: %v", err)
 	}

@@ -313,14 +313,21 @@ func (s *sseWriter) send(event, data string) bool {
 	return true
 }
 
+func (s *sseWriter) sendJSON(event string, value interface{}) bool {
+	data, err := json.Marshal(value)
+	if err != nil {
+		data = []byte(`{"message":"Failed to encode event"}`)
+		event = "error"
+	}
+	return s.send(event, string(data))
+}
+
 // runAgentStream runs the full agent loop as a real-time SSE stream. Every
 // upstream delta (reasoning, content, tool calls) is relayed to the client
 // immediately — no blocking on tool-calling iterations.
 func runAgentStream(w http.ResponseWriter, r *http.Request, baseURL, apiKey, model string, messages []map[string]interface{}, contextInfo agentContextInfo) {
 	sse := newSSEWriter(w, r)
-	if payload, err := json.Marshal(contextInfo); err == nil {
-		sse.send("context", string(payload))
-	}
+	sse.sendJSON("context", contextInfo)
 	lastUserText := ""
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i]["role"] == "user" {
@@ -380,14 +387,14 @@ func runAgentStream(w http.ResponseWriter, r *http.Request, baseURL, apiKey, mod
 				upstreamReq2.Header.Set("Authorization", "Bearer "+apiKey)
 				resp2, err2 := client.Do(upstreamReq2)
 				if err2 != nil {
-					sse.send("error", fmt.Sprintf(`{"message":"%s"}`, escapeJSON(err2.Error())))
+					sse.sendJSON("error", map[string]string{"message": err2.Error()})
 					return
 				}
 				relayUpstreamSSE(sse, resp2)
 				sse.send("done", "{}")
 				return
 			}
-			sse.send("error", fmt.Sprintf(`{"message":"%s"}`, escapeJSON(err.Error())))
+			sse.sendJSON("error", map[string]string{"message": err.Error()})
 			return
 		}
 
@@ -437,12 +444,12 @@ func runAgentStream(w http.ResponseWriter, r *http.Request, baseURL, apiKey, mod
 			// Relay reasoning immediately
 			if delta.ReasoningContent != "" {
 				stepReasoning += delta.ReasoningContent
-				sse.send("reasoning", fmt.Sprintf(`{"text":"%s"}`, escapeJSON(delta.ReasoningContent)))
+				sse.sendJSON("reasoning", map[string]string{"text": delta.ReasoningContent})
 			}
 			// Relay content immediately
 			if delta.Content != "" {
 				stepContent += delta.Content
-				sse.send("content", fmt.Sprintf(`{"text":"%s"}`, escapeJSON(delta.Content)))
+				sse.sendJSON("content", map[string]string{"text": delta.Content})
 			}
 			// Accumulate tool calls
 			for _, tc := range delta.ToolCalls {
@@ -514,7 +521,9 @@ func runAgentStream(w http.ResponseWriter, r *http.Request, baseURL, apiKey, mod
 
 		// Execute tools and relay results
 		for _, tc := range toolCalls {
-			sse.send("tool_call", fmt.Sprintf(`{"id":"%s","name":"%s","status":"running"}`, tc.id, escapeJSON(tc.name)))
+			sse.sendJSON("tool_call", map[string]string{
+				"id": tc.id, "name": tc.name, "status": "running",
+			})
 			result := executeAIAgentTool(tc.name, tc.arguments)
 			resultJSON, _ := json.Marshal(result)
 			toolContent := limitTextToTokenBudget(
@@ -525,8 +534,9 @@ func runAgentStream(w http.ResponseWriter, r *http.Request, baseURL, apiKey, mod
 			if len(resultStr) > 500 {
 				resultStr = resultStr[:500] + "…"
 			}
-			resultPreview, _ := json.Marshal(resultStr)
-			sse.send("tool_result", fmt.Sprintf(`{"id":"%s","name":"%s","result":%s}`, tc.id, escapeJSON(tc.name), string(resultPreview)))
+			sse.sendJSON("tool_result", map[string]string{
+				"id": tc.id, "name": tc.name, "result": resultStr,
+			})
 			messages = append(messages, map[string]interface{}{"role": "tool", "tool_call_id": tc.id, "content": toolContent})
 		}
 
@@ -545,7 +555,7 @@ func relayUpstreamSSE(sse *sseWriter, resp *http.Response) {
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		errPayload, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		sse.send("error", fmt.Sprintf(`{"message":"Upstream error: %s"}`, escapeJSON(string(errPayload))))
+		sse.sendJSON("error", map[string]string{"message": "Upstream error: " + string(errPayload)})
 		return
 	}
 	scanner := bufio.NewScanner(resp.Body)
@@ -572,10 +582,10 @@ func relayUpstreamSSE(sse *sseWriter, resp *http.Response) {
 		}
 		delta := chunk.Choices[0].Delta
 		if delta.ReasoningContent != "" {
-			sse.send("reasoning", fmt.Sprintf(`{"text":"%s"}`, escapeJSON(delta.ReasoningContent)))
+			sse.sendJSON("reasoning", map[string]string{"text": delta.ReasoningContent})
 		}
 		if delta.Content != "" {
-			sse.send("content", fmt.Sprintf(`{"text":"%s"}`, escapeJSON(delta.Content)))
+			sse.sendJSON("content", map[string]string{"text": delta.Content})
 		}
 	}
 }
@@ -1147,17 +1157,6 @@ func jsonStringList(items []string) string {
 		return "[]"
 	}
 	return string(data)
-}
-
-// escapeJSON escapes a string for safe embedding in a JSON string value
-// (handles newlines, quotes, backslashes, tabs, etc.).
-func escapeJSON(s string) string {
-	b, _ := json.Marshal(s)
-	// Marshal wraps in quotes — strip them to get just the escaped content.
-	if len(b) >= 2 {
-		return string(b[1 : len(b)-1])
-	}
-	return s
 }
 
 func loadAISettings() (baseURL string, apiKey string, model string, err error) {

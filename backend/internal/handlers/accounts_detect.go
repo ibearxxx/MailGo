@@ -1,12 +1,14 @@
 package handlers
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/xml"
 	"fmt"
 	"io"
 	"mailgo/internal/microsoftauth"
+	"mailgo/internal/safehttp"
 	"net"
 	"net/http"
 	"net/url"
@@ -492,13 +494,19 @@ func lookupSRVTargets(service, proto, domain string, fallbackPort int, useTLS bo
 }
 
 func fetchDiscoveryXML(endpoint, contentType, body string) ([]byte, error) {
-	client := &http.Client{Timeout: 3 * time.Second}
+	target, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	if err := safehttp.ValidateURL(context.Background(), target); err != nil {
+		return nil, err
+	}
+	client := safehttp.NewClient(3 * time.Second)
 	var req *http.Request
-	var err error
 	if body == "" {
-		req, err = http.NewRequest(http.MethodGet, endpoint, nil)
+		req, err = http.NewRequest(http.MethodGet, target.String(), nil)
 	} else {
-		req, err = http.NewRequest(http.MethodPost, endpoint, strings.NewReader(body))
+		req, err = http.NewRequest(http.MethodPost, target.String(), strings.NewReader(body))
 	}
 	if err != nil {
 		return nil, err
@@ -507,7 +515,7 @@ func fetchDiscoveryXML(endpoint, contentType, body string) ([]byte, error) {
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
-	res, err := client.Do(req)
+	res, err := client.Do(req) // codeql[go/request-forgery] safehttp validates the URL, redirects, and dialed IPs.
 	if err != nil {
 		return nil, err
 	}

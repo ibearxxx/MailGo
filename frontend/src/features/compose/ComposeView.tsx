@@ -22,6 +22,7 @@ import {
   type RichTextEditorHandle,
 } from "@/components/RichTextEditor";
 import { ComposeAIPanel, type ComposeAIContext } from "@/components/ai/ComposeAIPanel";
+import { secureID } from "@/lib/random";
 import { useAppStore } from "@/stores/appStore";
 import { useMessageQuery } from "@/hooks/queries/useMessages";
 import { useAccountsQuery } from "@/hooks/queries/useAccounts";
@@ -277,7 +278,7 @@ export function ComposeView() {
     // Nothing to save if everything is empty.
     // body is HTML from the rich-text editor — strip tags to detect truly
     // empty content (e.g. "<p><br></p>").
-    const bodyText = body.replace(/<[^>]+>/g, "").replace(/&nbsp;/gi, " ").trim();
+    const bodyText = htmlToPlainText(body).trim();
     if (!to.trim() && !subject.trim() && !bodyText) {
       // If we have a draft id, delete it because the user has cleared the form.
       if (draftId) {
@@ -302,7 +303,7 @@ export function ComposeView() {
       bcc_addresses: JSON.stringify(parseAddressList(bcc)),
       subject,
       body_html: body,
-      body_text: body.replace(/<[^>]+>/g, ""),
+      body_text: htmlToPlainText(body),
       in_reply_to: replyMsg?.message_id || "",
       references: replyMsg?.references || "",
     };
@@ -422,7 +423,7 @@ export function ComposeView() {
         setAttachments((prev) => [
           ...prev,
           {
-            id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+            id: secureID(),
             filename: file.name,
             mime_type: file.type || "application/octet-stream",
             size: file.size,
@@ -635,11 +636,7 @@ export function ComposeView() {
       const handle = editorHandleRef.current;
       if (!handle) return;
       // Convert plain text to simple HTML paragraphs.
-      const html = text
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => `<p>${line}</p>`)
-        .join("");
+      const html = plainTextToParagraphHTML(text);
       handle.replaceSelection(html);
     },
     [],
@@ -647,11 +644,7 @@ export function ComposeView() {
 
   const handleApplyAll = useCallback(
     (text: string) => {
-      const html = text
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => `<p>${line}</p>`)
-        .join("");
+      const html = plainTextToParagraphHTML(text);
       setBody(html);
     },
     [],
@@ -1197,6 +1190,28 @@ function serializeSnapshot(d: {
       d.body_text ||
       (d.body_html || "").replace(/<br\s*\/?>/gi, "\n"),
   });
+}
+
+function htmlToPlainText(html: string): string {
+  if (!html) return "";
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  return doc.body.textContent || "";
+}
+
+function plainTextToParagraphHTML(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => `<p>${escapeHTMLText(line) || "<br>"}</p>`)
+    .join("");
+}
+
+function escapeHTMLText(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function addressListToString(raw: string): string {

@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { secureID } from "@/lib/random";
 
 export type ToastType = "info" | "success" | "error" | "warning";
 
@@ -21,7 +22,7 @@ let pushToast: ((t: Omit<ToastData, "id">) => void) | null = null;
 export const useToastStore = create<ToastState>((set) => ({
   toasts: [],
   addToast: (t) => {
-    const id = Math.random().toString(36).slice(2);
+    const id = secureID();
     set((s) => ({ toasts: [...s.toasts, { ...t, id }] }));
     const duration = t.duration ?? 3000;
     if (duration > 0) {

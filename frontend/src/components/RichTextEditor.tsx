@@ -27,6 +27,7 @@ import {
   Redo2,
 } from "lucide-react";
 import { Tooltip } from "@/components/ui/Tooltip";
+import { secureID } from "@/lib/random";
 import { useTranslation } from "react-i18next";
 
 export interface InlineImageInfo {
@@ -293,7 +294,7 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
       const reader = new FileReader();
       reader.onload = () => {
         const dataUrl = reader.result as string;
-        const cid = `img-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        const cid = `img-${secureID()}`;
 
         const img = document.createElement("img");
         img.src = dataUrl;
