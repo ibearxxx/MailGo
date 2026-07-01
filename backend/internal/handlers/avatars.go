@@ -26,6 +26,8 @@ const avatarCacheTTL = 30 * 24 * time.Hour
 const maxFaviconBytes = 256 * 1024
 const avatarCacheVersion = "v2:"
 
+var avatarHostnameRe = regexp.MustCompile(`(?i)^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
+
 func GetFaviconAvatar(w http.ResponseWriter, r *http.Request) {
 	domain := strings.TrimSpace(r.URL.Query().Get("domain"))
 	if domain == "" {
@@ -134,6 +136,7 @@ func GetGravatarAvatar(w http.ResponseWriter, r *http.Request) {
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) MailGo/1.0 Safari/537.36")
 	req.Header.Set("Accept", "image/*,*/*;q=0.8")
 
+	// lgtm [go/request-forgery]
 	// codeql[go/request-forgery]
 	resp, err := client.Do(req)
 	if err != nil {
@@ -235,6 +238,7 @@ func probeURL(client *http.Client, url string) ([]byte, string, error) {
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) MailGo/1.0 Safari/537.36")
 	req.Header.Set("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
 	// safehttp validates the URL, every redirect, and the IP used at dial time.
+	// lgtm [go/request-forgery]
 	// codeql[go/request-forgery]
 	resp, err := client.Do(req)
 	if err != nil {
@@ -293,6 +297,7 @@ func fetchFaviconFromHTML(client *http.Client, domain string) ([]byte, string, e
 		req.Header.Set("Accept", "text/html,*/*")
 
 		// safehttp validates every redirect and the IP used at dial time.
+		// lgtm [go/request-forgery]
 		// codeql[go/request-forgery]
 		resp, err := client.Do(req)
 		if err != nil {
@@ -366,6 +371,9 @@ func normalizeAvatarDomain(value string) string {
 		value = host
 	}
 	value = strings.Trim(value, ".")
+	if !avatarHostnameRe.MatchString(value) {
+		return ""
+	}
 	return value
 }
 

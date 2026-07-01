@@ -12,10 +12,13 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 )
+
+var mailDiscoveryDomainRe = regexp.MustCompile(`(?i)^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
 
 // KnownProviders maps email domains to their standard IMAP/SMTP settings.
 // Detection still probes the sockets before treating a config as ready.
@@ -93,6 +96,11 @@ func DetectAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	domain := strings.ToLower(strings.SplitN(email, "@", 2)[1])
+	domain = strings.Trim(strings.TrimSpace(domain), ".")
+	if !mailDiscoveryDomainRe.MatchString(domain) {
+		respondError(w, http.StatusBadRequest, "Invalid email domain")
+		return
+	}
 
 	resp := DetectResponse{
 		Method:    "none",
@@ -499,6 +507,9 @@ func fetchDiscoveryXML(endpoint, contentType, body string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if !allowedDiscoveryURL(target) {
+		return nil, fmt.Errorf("unsafe discovery endpoint")
+	}
 	if err := safehttp.ValidateURL(context.Background(), target); err != nil {
 		return nil, err
 	}
@@ -517,6 +528,7 @@ func fetchDiscoveryXML(endpoint, contentType, body string) ([]byte, error) {
 		req.Header.Set("Content-Type", contentType)
 	}
 	// safehttp validates the URL, every redirect, and the IP used at dial time.
+	// lgtm [go/request-forgery]
 	// codeql[go/request-forgery]
 	res, err := client.Do(req)
 	if err != nil {
@@ -527,6 +539,32 @@ func fetchDiscoveryXML(endpoint, contentType, body string) ([]byte, error) {
 		return nil, fmt.Errorf("discovery returned HTTP %d", res.StatusCode)
 	}
 	return io.ReadAll(io.LimitReader(res.Body, 512*1024))
+}
+
+func allowedDiscoveryURL(target *url.URL) bool {
+	if target == nil || target.User != nil {
+		return false
+	}
+	if target.Scheme != "https" && target.Scheme != "http" {
+		return false
+	}
+	host := strings.TrimSuffix(strings.ToLower(target.Hostname()), ".")
+	if !mailDiscoveryDomainRe.MatchString(host) {
+		return false
+	}
+	path := target.EscapedPath()
+	switch {
+	case strings.HasPrefix(host, "autoconfig.") && path == "/mail/config-v1.1.xml":
+		return true
+	case path == "/.well-known/autoconfig/mail/config-v1.1.xml":
+		return true
+	case strings.HasPrefix(host, "autodiscover.") && path == "/autodiscover/autodiscover.xml":
+		return true
+	case path == "/autodiscover/autodiscover.xml":
+		return true
+	default:
+		return false
+	}
 }
 
 type mozillaClientConfig struct {

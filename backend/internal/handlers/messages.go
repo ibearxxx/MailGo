@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -21,7 +22,6 @@ import (
 	"net"
 	"net/http"
 	"net/mail"
-	"net/smtp"
 	"strings"
 	"time"
 )
@@ -1169,109 +1169,121 @@ func buildMIMEMessage(msg outboundMessage) ([]byte, error) {
 }
 
 func sendSMTP(account smtpAccount, from string, recipients []string, data []byte) error {
-	addr := fmt.Sprintf("%s:%d", account.Host, account.Port)
+	addr := net.JoinHostPort(account.Host, fmt.Sprintf("%d", account.Port))
 	fromAddr := extractEmail(from)
 	if fromAddr == "" {
 		return fmt.Errorf("empty from address")
 	}
-
-	// Choose the authentication strategy. We use smtp.PlainAuth which
-	// works with the vast majority of servers (QQ, 163, Gmail app
-	// passwords, Outlook, etc). When connecting over a plaintext socket
-	// PlainAuth would normally refuse to send the password, but since we
-	// always upgrade to TLS (implicit on 465, STARTTLS on 587/25) the
-	// connection is encrypted before auth happens.
-	var auth smtp.Auth
-	if account.OAuthToken != "" {
-		auth = microsoftauth.NewSMTPAuth(account.Username, account.OAuthToken)
-	} else if account.Password != "" {
-		auth = smtp.PlainAuth("", account.Username, account.Password, account.Host)
+	if err := validateSMTPData(data); err != nil {
+		return err
 	}
 
 	tlsConfig := &tls.Config{ServerName: account.Host, MinVersion: tls.VersionTLS12}
+	dialer := &net.Dialer{Timeout: 30 * time.Second}
+	var conn net.Conn
+	var err error
 
 	switch account.Encryption {
 	case "ssl":
-		// Implicit TLS (SMTPS, typically port 465). The standard library's
-		// smtp.SendMail does not support implicit TLS, so we dial a TLS
-		// connection ourselves and run the SMTP client on top of it.
-		conn, err := tls.Dial("tcp", addr, tlsConfig)
-		if err != nil {
-			return fmt.Errorf("SMTPS connect %s: %w", addr, err)
-		}
-		defer conn.Close()
-		conn.SetDeadline(time.Now().Add(60 * time.Second))
-
-		c, err := smtp.NewClient(conn, account.Host)
-		if err != nil {
-			return fmt.Errorf("SMTPS hello: %w", err)
-		}
-		defer c.Quit()
-
-		return runSMTPClient(c, auth, fromAddr, recipients, data)
-
+		conn, err = tls.DialWithDialer(dialer, "tcp", addr, tlsConfig)
 	case "none":
-		// Plain text, no encryption (not recommended, port 25).
-		// smtp.PlainAuth refuses to send passwords over plaintext, so we
-		// only use auth when the password is empty (local relay).
-		var plainAuth smtp.Auth
 		if account.OAuthToken != "" {
 			return fmt.Errorf("Microsoft XOAUTH2 requires TLS")
 		}
 		if account.Password != "" {
-			plainAuth = smtp.PlainAuth("", account.Username, account.Password, account.Host)
+			return fmt.Errorf("SMTP authentication requires TLS")
 		}
-		// The MIME payload has passed validateOutboundMessage; all user-controlled
-		// headers are parsed as RFC 5322 addresses or rejected, and bodies are
-		// quoted-printable encoded by buildMIMEMessage.
-		// codeql[go/email-injection]
-		return smtp.SendMail(addr, plainAuth, fromAddr, recipients, data)
-
+		conn, err = dialer.Dial("tcp", addr)
 	default:
-		// "starttls" or empty — smtp.SendMail handles STARTTLS upgrade
-		// and authentication automatically. When the server advertises
-		// STARTTLS, smtp.SendMail will upgrade the connection before
-		// authenticating.
-		// codeql[go/email-injection]
-		return smtp.SendMail(addr, auth, fromAddr, recipients, data)
+		conn, err = dialer.Dial("tcp", addr)
 	}
-}
+	if err != nil {
+		return fmt.Errorf("SMTP connect %s: %w", addr, err)
+	}
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(time.Now().Add(60 * time.Second))
 
-// runSMTPClient drives an existing *smtp.Client (already connected) through
-// auth, MAIL FROM, RCPT TO, DATA and QUIT. Used by the implicit-TLS path.
-func runSMTPClient(c *smtp.Client, auth smtp.Auth, from string, recipients []string, data []byte) error {
-	if err := c.Hello("mailgo.local"); err != nil {
+	greeting, err := readSMTPResponse(conn)
+	if err != nil {
+		return fmt.Errorf("SMTP greeting: %w", err)
+	}
+	if !strings.HasPrefix(greeting, "220") {
+		return fmt.Errorf("SMTP server not ready: %s", firstLine(greeting))
+	}
+	if err := smtpCommand(conn, "EHLO mailgo.local\r\n", "250"); err != nil {
 		return fmt.Errorf("EHLO: %w", err)
 	}
-	if auth != nil {
-		if ok, _ := c.Extension("AUTH"); ok {
-			if err := c.Auth(auth); err != nil {
-				return fmt.Errorf("AUTH: %w", err)
-			}
+	if account.Encryption != "ssl" && account.Encryption != "none" {
+		if err := smtpCommand(conn, "STARTTLS\r\n", "220"); err != nil {
+			return fmt.Errorf("STARTTLS: %w", err)
+		}
+		tlsConn := tls.Client(conn, tlsConfig)
+		if err := tlsConn.Handshake(); err != nil {
+			return fmt.Errorf("STARTTLS handshake: %w", err)
+		}
+		conn = tlsConn
+		_ = conn.SetDeadline(time.Now().Add(60 * time.Second))
+		if err := smtpCommand(conn, "EHLO mailgo.local\r\n", "250"); err != nil {
+			return fmt.Errorf("EHLO after STARTTLS: %w", err)
 		}
 	}
-	if err := c.Mail(from); err != nil {
+
+	if account.OAuthToken != "" {
+		if err := smtpAuthXOAUTH2(conn, account.Username, account.OAuthToken); err != nil {
+			return fmt.Errorf("AUTH XOAUTH2: %w", err)
+		}
+	} else if account.Password != "" {
+		if err := smtpAuthPlain(conn, account.Username, account.Password); err != nil {
+			return fmt.Errorf("AUTH PLAIN: %w", err)
+		}
+	}
+
+	if err := smtpCommand(conn, "MAIL FROM:<"+fromAddr+">\r\n", "250"); err != nil {
 		return fmt.Errorf("MAIL FROM: %w", err)
 	}
 	for _, rcpt := range recipients {
-		if err := c.Rcpt(rcpt); err != nil {
+		rcpt = extractEmail(rcpt)
+		if rcpt == "" {
+			return fmt.Errorf("invalid recipient")
+		}
+		if err := smtpCommand(conn, "RCPT TO:<"+rcpt+">\r\n", "250", "251"); err != nil {
 			return fmt.Errorf("RCPT TO %s: %w", rcpt, err)
 		}
 	}
-	w, err := c.Data()
-	if err != nil {
+	if err := smtpCommand(conn, "DATA\r\n", "354"); err != nil {
 		return fmt.Errorf("DATA: %w", err)
 	}
-	// codeql[go/email-injection]
-	if _, err := w.Write(data); err != nil {
+	if _, err := conn.Write(dotStuff(data)); err != nil {
 		return fmt.Errorf("DATA write: %w", err)
 	}
-	if err := w.Close(); err != nil {
+	if resp, err := readSMTPResponse(conn); err != nil {
 		return fmt.Errorf("DATA close: %w", err)
+	} else if !strings.HasPrefix(resp, "250") {
+		return fmt.Errorf("DATA rejected: %s", firstLine(resp))
 	}
+	_ = smtpCommand(conn, "QUIT\r\n", "221")
 	return nil
 }
 
+func smtpAuthPlain(conn net.Conn, username, password string) error {
+	if strings.ContainsAny(username+password, "\r\n") {
+		return fmt.Errorf("credentials contain forbidden line breaks")
+	}
+	payload := "\x00" + username + "\x00" + password
+	return smtpCommand(conn, "AUTH PLAIN "+base64.StdEncoding.EncodeToString([]byte(payload))+"\r\n", "235")
+}
+
+func smtpAuthXOAUTH2(conn net.Conn, username, token string) error {
+	if strings.ContainsAny(username+token, "\r\n") {
+		return fmt.Errorf("XOAUTH2 credentials contain forbidden line breaks")
+	}
+	payload := "user=" + username + "\x01auth=Bearer " + token + "\x01\x01"
+	if err := smtpCommand(conn, "AUTH XOAUTH2 "+base64.StdEncoding.EncodeToString([]byte(payload))+"\r\n", "235"); err != nil {
+		_, _ = conn.Write([]byte("\r\n"))
+		return err
+	}
+	return nil
+}
 func smtpCommand(conn net.Conn, cmd string, okCodes ...string) error {
 	if _, err := conn.Write([]byte(cmd)); err != nil {
 		return fmt.Errorf("SMTP write failed: %w", err)
@@ -1431,6 +1443,27 @@ func validateOutboundMessage(msg outboundMessage) error {
 	for _, att := range msg.Attachments {
 		if strings.ContainsAny(att.Filename+att.MimeType+att.ContentID, "\r\n") {
 			return fmt.Errorf("attachment headers contain forbidden line breaks")
+		}
+	}
+	return nil
+}
+
+func validateSMTPData(data []byte) error {
+	if len(data) == 0 {
+		return fmt.Errorf("empty SMTP message")
+	}
+	if !bytes.Contains(data, []byte("\r\n\r\n")) {
+		return fmt.Errorf("SMTP message is missing the header/body separator")
+	}
+	if bytes.Contains(data, []byte("\x00")) {
+		return fmt.Errorf("SMTP message contains NUL bytes")
+	}
+	for i, b := range data {
+		if b == '\n' && (i == 0 || data[i-1] != '\r') {
+			return fmt.Errorf("SMTP message contains a bare LF")
+		}
+		if b == '\r' && (i+1 >= len(data) || data[i+1] != '\n') {
+			return fmt.Errorf("SMTP message contains a bare CR")
 		}
 	}
 	return nil

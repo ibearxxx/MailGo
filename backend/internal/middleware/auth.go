@@ -144,6 +144,7 @@ func (a *TokenAuth) Login(w http.ResponseWriter, r *http.Request) {
 
 	// Secure is enabled for HTTPS and trusted HTTPS reverse proxies. Direct
 	// HTTP-by-IP is an explicitly supported compatibility mode.
+	// lgtm [go/cookie-secure-not-set]
 	// codeql[go/cookie-secure-not-set]
 	http.SetCookie(w, &http.Cookie{
 		Name:     authCookieName,
@@ -172,6 +173,7 @@ func (a *TokenAuth) Logout(w http.ResponseWriter, r *http.Request) {
 			_ = database.RDB.Del(r.Context(), authSessionKey(hash)).Err()
 		}
 	}
+	// lgtm [go/cookie-secure-not-set]
 	// codeql[go/cookie-secure-not-set]
 	http.SetCookie(w, &http.Cookie{
 		Name:     authCookieName,
@@ -198,6 +200,7 @@ func (a *TokenAuth) RequireToken(next http.Handler) http.Handler {
 		}
 		token := tokenFromRequest(r)
 		if token == "" || !a.validToken(r.Context(), token) {
+			// lgtm [go/cookie-secure-not-set]
 			// codeql[go/cookie-secure-not-set]
 			http.SetCookie(w, &http.Cookie{
 				Name:     authCookieName,
