@@ -6,11 +6,15 @@ services:
     ports:
       - "${SERVER_PORT:-8080}:8080"
     env_file: .env
+    environment:
+      MAILGO_DATA_DIR: ${MAILGO_DATA_DIR:-/data/mailgo}
     depends_on:
       mysql:
         condition: service_healthy
       redis:
         condition: service_healthy
+    volumes:
+      - mailgo-data:/data/mailgo
 
   mysql:
     image: mysql:8.0
@@ -50,5 +54,6 @@ services:
       retries: 5
 
 volumes:
+  mailgo-data:
   mysql-data:
   redis-data:

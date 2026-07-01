@@ -192,7 +192,7 @@ function MessageItemComponent({
       style={{
         borderColor: "var(--geist-border)",
         backgroundColor: isSelected
-          ? "var(--mailgo-sidebar-active)"
+          ? "var(--mailgo-message-list-active)"
           : undefined,
         color: "var(--geist-primary)",
         fontWeight: isUnread ? 600 : 400,

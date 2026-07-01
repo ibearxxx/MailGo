@@ -132,7 +132,7 @@ go build -o mailgo .
 | PGP encryption | Generate RSA-4096 key pairs, encrypt outgoing messages, auto-decrypt incoming messages, manual private key import, and key management with download. |
 | AI assistant | AI-powered compose panel for writing, translating, summarizing, and modifying emails. Supports OpenAI-compatible APIs with streaming responses. |
 | Email tracking protection | Detect and block tracking pixels, read receipts, and beacons from known ESP domains. Configurable per-message allow/deny. |
-| Customizable UI | Accent colors, background images with frosted glass effect, sidebar transparency, font size, border radius, shadow intensity, animation speed, compact mode, and custom CSS injection. |
+| Customizable UI | Accent colors, background images or looping videos with frosted glass effect, sidebar transparency, font size, border radius, shadow intensity, animation speed, compact mode, and custom CSS injection. |
 | Themes & i18n | Light, dark, and system theme with cross-device sync. Chinese and English interface with cross-device language sync. |
 | Search & filter | Full-text search across subjects, senders, and body content. Filter by date range, sender, subject, and attachment presence. |
 | Attachments | PDF preview with page navigation, image preview, inline CID image resolution, download, and 25MB upload support. |
@@ -147,7 +147,7 @@ go build -o mailgo .
 | PGP 加密 | 生成 RSA-4096 密钥对，加密发出的邮件，自动解密收到的加密邮件，支持手动导入私钥和密钥下载管理。 |
 | AI 助手 | AI 辅助撰写面板，支持编写、翻译、摘要和修改邮件，兼容 OpenAI 接口，流式响应。 |
 | 邮件追踪防护 | 检测并拦截追踪像素、阅读回执和信标，覆盖主流 ESP 追踪域名，支持按邮件单独允许/拦截。 |
-| 自定义界面 | 主题色、背景图毛玻璃效果、侧栏透明度、字体大小、圆角、阴影强度、动画速度、紧凑模式、自定义 CSS 注入。 |
+| 自定义界面 | 主题色、背景图片或循环视频毛玻璃效果、侧栏透明度、字体大小、圆角、阴影强度、动画速度、紧凑模式、自定义 CSS 注入。 |
 | 主题与国际化 | 浅色、深色、跟随系统三种主题，跨设备同步。中英文界面，跨设备语言同步。 |
 | 搜索与筛选 | 全文搜索主题、发件人和正文内容，按时间范围、发件人、主题、是否有附件筛选。 |
 | 附件处理 | PDF 预览含翻页、图片预览、内嵌 CID 图片解析、下载、25MB 上传支持。 |
@@ -163,6 +163,7 @@ All configuration is via environment variables in `.env`:
 |---|---|---|
 | `ENCRYPTION_KEY` | AES-256 key for encrypting passwords at rest / 静态加密密钥 | Auto-generated / 自动生成 |
 | `SERVER_PORT` | HTTP listen port / HTTP 监听端口 | `8080` |
+| `MAILGO_DATA_DIR` | Persistent file storage for uploaded backgrounds and avatars / 上传背景与头像的持久化文件目录 | `~/.mailgo` (`/data/mailgo` in Docker / Docker 中为 `/data/mailgo`) |
 | `TRUSTED_PROXIES` | Additional trusted reverse proxy IPs/CIDRs, comma-separated / 额外可信反代 IP 或 CIDR | Loopback only / 仅回环地址 |
 | `MYSQL_HOST` | MySQL host / MySQL 主机 | `mysql` |
 | `MYSQL_PORT` | MySQL port / MySQL 端口 | `3306` |

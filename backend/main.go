@@ -179,6 +179,9 @@ func main() {
 	api.HandleFunc("/avatars/gravatar", handlers.GetGravatarAvatar).Methods("GET")
 	api.HandleFunc("/avatars/fetch", handlers.FetchAvatar).Methods("GET")
 	api.HandleFunc("/avatars/serve/{file}", handlers.ServeAvatar).Methods("GET")
+	api.HandleFunc("/backgrounds", handlers.UploadBackground).Methods("POST")
+	api.HandleFunc("/backgrounds/serve/{file}", handlers.ServeBackground).Methods("GET")
+	api.HandleFunc("/backgrounds/{file}", handlers.DeleteBackground).Methods("DELETE")
 
 	// Folders
 	api.HandleFunc("/folders", handlers.ListFolders).Methods("GET")

@@ -519,7 +519,11 @@ export function MessageDetail({ messageId, onBack, showThread = false }: Message
   return (
     <div
       className="flex flex-col h-full"
-      style={{ backgroundColor: "var(--geist-bg-100)" }}
+      style={{
+        backgroundColor: "var(--mailgo-reading-pane-bg)",
+        backdropFilter: "var(--mailgo-reading-pane-backdrop)",
+        WebkitBackdropFilter: "var(--mailgo-reading-pane-backdrop)",
+      }}
     >
       {/* Toolbar */}
       <div

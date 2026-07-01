@@ -328,8 +328,10 @@ export function MessageList({
       <div
         className="flex items-center gap-2 px-3 h-11 border-b shrink-0 text-label-13"
         style={{
-          backgroundColor: "var(--geist-bg-100)",
+          backgroundColor: "var(--mailgo-message-list-bg)",
           borderColor: "var(--geist-border)",
+          backdropFilter: "var(--mailgo-message-list-backdrop)",
+          WebkitBackdropFilter: "var(--mailgo-message-list-backdrop)",
         }}
       >
         <label className="inline-flex items-center gap-2 cursor-pointer">
@@ -411,7 +413,13 @@ export function MessageList({
         onPointerUp={onListPointerUp}
         onPointerCancel={onListPointerUp}
         onScroll={onScroll}
-        style={{ position: "relative", userSelect: dragSelecting.current ? "none" : undefined }}
+        style={{
+          position: "relative",
+          backgroundColor: "var(--mailgo-message-list-bg)",
+          backdropFilter: "var(--mailgo-message-list-backdrop)",
+          WebkitBackdropFilter: "var(--mailgo-message-list-backdrop)",
+          userSelect: dragSelecting.current ? "none" : undefined,
+        }}
       >
         <div
           style={{

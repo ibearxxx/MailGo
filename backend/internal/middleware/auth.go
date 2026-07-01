@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -212,8 +213,7 @@ func (a *TokenAuth) RequireToken(next http.Handler) http.Handler {
 		}
 		if isUnsafeMethod(r.Method) &&
 			strings.TrimSpace(r.Header.Get("Authorization")) == "" {
-			fetchSite := strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")))
-			if fetchSite != "" && fetchSite != "same-origin" {
+			if !cookieWriteRequestIsSameOrigin(r) {
 				writeAuthError(w, http.StatusForbidden, "Cross-site request rejected")
 				return
 			}
@@ -342,6 +342,38 @@ func isUnsafeMethod(method string) bool {
 	return method != http.MethodGet &&
 		method != http.MethodHead &&
 		method != http.MethodOptions
+}
+
+func cookieWriteRequestIsSameOrigin(r *http.Request) bool {
+	fetchSite := strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")))
+	if fetchSite != "" && fetchSite != "same-origin" {
+		return false
+	}
+
+	if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" {
+		return requestURLIsSameOrigin(r, origin)
+	}
+	if referer := strings.TrimSpace(r.Header.Get("Referer")); referer != "" {
+		return requestURLIsSameOrigin(r, referer)
+	}
+
+	// SameSite=Strict prevents modern browsers from attaching the cookie to a
+	// cross-site write request. Non-browser clients without Origin/Referer keep
+	// working as long as they have a valid cookie.
+	return true
+}
+
+func requestURLIsSameOrigin(r *http.Request, raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return false
+	}
+	scheme := "http"
+	if requestIsSecure(r) {
+		scheme = "https"
+	}
+	return strings.EqualFold(u.Scheme, scheme) &&
+		strings.EqualFold(u.Host, r.Host)
 }
 
 func writeAuthError(w http.ResponseWriter, status int, message string) {

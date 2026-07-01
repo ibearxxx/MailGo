@@ -686,15 +686,21 @@ func storeMessage(accountID, folderID int64, msg *imap.Message, section *imap.Bo
 	if existingID != 0 {
 		// Re-fetch body when:
 		// 1. The stored body looks like undecoded quoted-printable (old bug)
-		// 2. The body was cleared by the user (storage cleanup / manual clear)
+		// 2. HTML was incorrectly stored as text because an HTML MIME part
+		//    with Content-ID was previously classified as an attachment
+		// 3. The body was cleared by the user (storage cleanup / manual clear)
 		bodyEmpty := oldBodyText == "" && oldBodyHTML == ""
-		if (bodyEmpty || needsBodyRepair(oldBodyText, oldBodyHTML)) && (parsed.bodyText != "" || parsed.bodyHTML != "") {
+		repairNeeded := needsBodyRepair(oldBodyText, oldBodyHTML)
+		if (bodyEmpty || repairNeeded) && (parsed.bodyText != "" || parsed.bodyHTML != "") {
 			_, _ = database.DB.Exec(
 				`UPDATE messages SET body_text = ?, body_html = ?, snippet = ?,
 				 has_attachments = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
 				parsed.bodyText, parsed.bodyHTML, parsed.snippet,
 				parsed.hasAttachments, existingID,
 			)
+			if repairNeeded {
+				replaceAttachmentMetadata(existingID, parsed.attachments)
+			}
 			return true
 		}
 		return false
@@ -757,14 +763,18 @@ func messageSyncDate(msg *imap.Message) time.Time {
 var qpEncodedPattern = regexp.MustCompile(`(?:=[0-9A-Fa-f]{2}){3,}`)
 
 // needsBodyRepair reports whether a previously stored body should be
-// overwritten by a freshly parsed one. We only repair when the old text
-// body clearly looks like undecoded quoted-printable and there's no HTML
-// fallback — that way we never clobber legitimately encoded content.
+// overwritten by a freshly parsed one.
 func needsBodyRepair(bodyText, bodyHTML string) bool {
 	if bodyHTML != "" {
 		return false
 	}
-	return qpEncodedPattern.MatchString(bodyText)
+	return qpEncodedPattern.MatchString(bodyText) || looksLikeHTMLDocument(bodyText)
+}
+
+func looksLikeHTMLDocument(body string) bool {
+	body = strings.ToLower(strings.TrimSpace(body))
+	return strings.HasPrefix(body, "<html") ||
+		strings.HasPrefix(body, "<!doctype html")
 }
 
 /* ----------------------- RFC822 parsing ----------------------- */
@@ -997,7 +1007,11 @@ func walkParts(body io.Reader, mediaType string, params map[string]string, cte s
 			cid := p.Header.Get("Content-ID")
 			cid = strings.Trim(cid, "<>")
 
-			if disposition == "attachment" || disposition == "inline" || filename != "" || cid != "" {
+			isTextBody := pMediaType == "text/plain" || pMediaType == "text/html"
+			isAttachment := disposition == "attachment" ||
+				filename != "" ||
+				(!isTextBody && (disposition == "inline" || cid != ""))
+			if isAttachment {
 				// Read decoded content to determine actual size, then
 				// discard. The content itself is lazily fetched from IMAP
 				// when the user clicks to preview or download.
@@ -1095,23 +1109,24 @@ type repairCandidate struct {
 	FolderName                   string
 }
 
-// RepairGarbledBodies scans all stored messages whose body text looks like
-// undecoded quoted-printable ("=E4=BA=B2..." gibberish), re-fetches the raw
-// RFC822 from the IMAP server, and overwrites the stored body with a freshly
-// parsed version. This fixes messages that were synced by an older version
-// of the parser before QP decoding was added.
+// RepairGarbledBodies scans stored messages whose body needs reparsing,
+// re-fetches the raw RFC822 from IMAP, and overwrites the stored body. It
+// repairs both undecoded quoted-printable and HTML that an older parser
+// incorrectly stored as plain text.
 //
 // It connects to each account once and repairs all affected messages in
 // every folder. Returns the number of messages repaired.
 func RepairGarbledBodies() int {
-	// We can't use REGEXP (not enabled in modernc sqlite by default), so we
-	// fetch all text-only messages and filter in Go with the QP pattern.
 	rows, err := database.DB.Query(
 		`SELECT m.id, m.account_id, m.folder_id, m.uid, f.name, m.body_text
 		 FROM messages m
 		 JOIN folders f ON m.folder_id = f.id
 		 WHERE (m.body_html IS NULL OR m.body_html = '')
-		   AND m.body_text LIKE '%=%'`)
+		   AND (
+		     m.body_text LIKE '%=%'
+		     OR LOWER(LTRIM(m.body_text)) LIKE '<html%'
+		     OR LOWER(LTRIM(m.body_text)) LIKE '<!doctype html%'
+		   )`)
 	if err != nil {
 		log.Printf("RepairGarbledBodies query: %v", err)
 		return 0
@@ -1124,8 +1139,7 @@ func RepairGarbledBodies() int {
 		if err := rows.Scan(&c.ID, &c.AccountID, &c.FolderID, &c.UID, &c.FolderName, &bodyText); err != nil {
 			continue
 		}
-		// Only repair bodies that contain 3+ consecutive QP escape sequences.
-		if qpEncodedPattern.MatchString(bodyText) {
+		if needsBodyRepair(bodyText, "") {
 			candidates = append(candidates, c)
 		}
 	}
@@ -1251,9 +1265,37 @@ func repairFolderMessages(c *client.Client, msgs []repairCandidate, serverName s
 			parsed.bodyText, parsed.bodyHTML, parsed.snippet,
 			parsed.hasAttachments, dbID,
 		)
+		replaceAttachmentMetadata(dbID, parsed.attachments)
 		repaired++
 	}
 	return repaired
+}
+
+func replaceAttachmentMetadata(messageID int64, attachments []attMeta) {
+	tx, err := database.DB.Begin()
+	if err != nil {
+		log.Printf("replace attachment metadata begin message %d: %v", messageID, err)
+		return
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec("DELETE FROM attachments WHERE message_id = ?", messageID); err != nil {
+		log.Printf("replace attachment metadata delete message %d: %v", messageID, err)
+		return
+	}
+	for _, a := range attachments {
+		if _, err := tx.Exec(
+			`INSERT INTO attachments (message_id, filename, mime_type, size, content_id, part_id)
+			 VALUES (?, ?, ?, ?, ?, ?)`,
+			messageID, a.filename, a.mimeType, a.size, a.contentID, a.partID,
+		); err != nil {
+			log.Printf("replace attachment metadata insert message %d: %v", messageID, err)
+			return
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		log.Printf("replace attachment metadata commit message %d: %v", messageID, err)
+	}
 }
 
 // LoadAccountConfigs reads the IMAP connection parameters for one (when

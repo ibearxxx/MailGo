@@ -3,6 +3,7 @@ import { persist } from "zustand/middleware";
 import { type AppearanceSettings, DEFAULT_APPEARANCE } from "@/lib/api";
 
 const STORAGE_KEY = "mailgo-appearance";
+const BACKGROUND_VIDEO_ID = "mailgo-background-video";
 
 // Track when local edits are in progress so Layout.tsx can skip backend sync.
 let _editingUntil = 0;
@@ -69,25 +70,30 @@ function applyAppearance(s: AppearanceSettings) {
     withAlpha(adjustedAccent, 0.25),
   );
 
-  // ── Background image ──
-  // Pick desktop or mobile image based on viewport width.
+  // ── Background media ──
+  // Pick desktop or mobile media based on viewport width.
   const isMobileViewport = typeof window !== "undefined" && window.innerWidth < 640;
-  const activeBgImage = isMobileViewport
+  const activeBgMedia = isMobileViewport
     ? (s.bg_image_mobile || s.bg_image)
     : (s.bg_image || s.bg_image_mobile);
-  if (activeBgImage) {
-    body.style.backgroundImage = `url(${activeBgImage})`;
+  const activeBgIsVideo = isVideoBackground(activeBgMedia);
+  applyBackgroundVideo(activeBgIsVideo ? activeBgMedia : "");
+  if (activeBgMedia && !activeBgIsVideo) {
+    body.style.backgroundImage = `url(${activeBgMedia})`;
     body.style.backgroundSize = "cover";
     body.style.backgroundPosition = "center";
     body.style.backgroundAttachment = "fixed";
   } else {
     body.style.backgroundImage = "none";
+    body.style.removeProperty("background-size");
+    body.style.removeProperty("background-position");
+    body.style.removeProperty("background-attachment");
   }
 
   // ── Surface tinting + transparency ──
-  // bg_opacity: 100 = fully opaque (no image visible), 0 = fully transparent
+  // bg_opacity: 100 = fully opaque (no media visible), 0 = fully transparent
   const surfaceAlpha = s.bg_opacity / 100;
-  const hasBgImage = !!activeBgImage;
+  const hasBgMedia = !!activeBgMedia;
 
   if (isDark) {
     const overlay = `rgba(0, 0, 0, ${surfaceAlpha})`;
@@ -103,8 +109,8 @@ function applyAppearance(s: AppearanceSettings) {
     root.style.setProperty("--geist-bg-200", `rgba(${ar}, ${ag}, ${ab}, ${surfaceAlpha})`);
   }
 
-  // When no background image and full opacity, reset to CSS defaults.
-  if (!hasBgImage && s.bg_opacity === 100) {
+  // When no background media and full opacity, reset to CSS defaults.
+  if (!hasBgMedia && s.bg_opacity === 100) {
     root.style.removeProperty("--geist-bg-100");
     root.style.removeProperty("--geist-bg-200");
   }
@@ -152,6 +158,39 @@ function applyAppearance(s: AppearanceSettings) {
   root.style.setProperty("--mailgo-titlebar-bg", sidebarBg);
   root.style.setProperty("--mailgo-statusbar-bg", sidebarBg);
   root.style.setProperty("--mailgo-sidebar-backdrop", sidebarBlur);
+
+  // ── Message list glassmorphism ──
+  const listOpacity = typeof s.message_list_opacity === "number"
+    ? s.message_list_opacity
+    : DEFAULT_APPEARANCE.message_list_opacity;
+  const listBlur = typeof s.message_list_blur === "number"
+    ? s.message_list_blur
+    : DEFAULT_APPEARANCE.message_list_blur;
+  const listAlpha = listOpacity / 100;
+  const listBg = `rgba(${sidebarBase}, ${listAlpha})`;
+  root.style.setProperty("--mailgo-message-list-bg", listBg);
+  root.style.setProperty(
+    "--mailgo-message-list-active",
+    isDark ? "rgba(255, 255, 255, 0.1)" : "rgba(0, 0, 0, 0.08)",
+  );
+  root.style.setProperty(
+    "--mailgo-message-list-backdrop",
+    listBlur > 0 ? `blur(${listBlur}px)` : "none",
+  );
+
+  // ── Reading pane glassmorphism ──
+  const readingOpacity = typeof s.reading_pane_opacity === "number"
+    ? s.reading_pane_opacity
+    : DEFAULT_APPEARANCE.reading_pane_opacity;
+  const readingBlur = typeof s.reading_pane_blur === "number"
+    ? s.reading_pane_blur
+    : DEFAULT_APPEARANCE.reading_pane_blur;
+  const readingAlpha = readingOpacity / 100;
+  root.style.setProperty("--mailgo-reading-pane-bg", `rgba(${sidebarBase}, ${readingAlpha})`);
+  root.style.setProperty(
+    "--mailgo-reading-pane-backdrop",
+    readingBlur > 0 ? `blur(${readingBlur}px)` : "none",
+  );
 
   // ── Content panel blur ──
   root.style.setProperty(
@@ -215,6 +254,43 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } {
 
 function isValidHex(hex: string): boolean {
   return /^#[0-9a-fA-F]{3,6}$/.test(hex.trim());
+}
+
+function isVideoBackground(src: string): boolean {
+  if (!src) return false;
+  if (/^data:video\//i.test(src)) return true;
+  try {
+    const url = new URL(src, window.location.href);
+    return /\.(mp4|webm|ogg|ogv)$/i.test(url.pathname);
+  } catch {
+    return /\.(mp4|webm|ogg|ogv)(?:[?#].*)?$/i.test(src);
+  }
+}
+
+function applyBackgroundVideo(src: string) {
+  if (typeof document === "undefined") return;
+  let video = document.getElementById(BACKGROUND_VIDEO_ID) as HTMLVideoElement | null;
+  if (!src) {
+    video?.remove();
+    return;
+  }
+  if (!video) {
+    video = document.createElement("video");
+    video.id = BACKGROUND_VIDEO_ID;
+    video.autoplay = true;
+    video.loop = true;
+    video.muted = true;
+    video.playsInline = true;
+    video.setAttribute("aria-hidden", "true");
+    document.body.prepend(video);
+  }
+  if (video.getAttribute("src") !== src) {
+    video.setAttribute("src", src);
+    video.load();
+  }
+  video.play().catch(() => {
+    // Browsers may briefly reject autoplay while the tab is backgrounded.
+  });
 }
 
 function withAlpha(hex: string, alpha: number): string {

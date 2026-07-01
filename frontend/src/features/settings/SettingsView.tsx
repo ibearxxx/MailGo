@@ -29,6 +29,7 @@ import {
   Sparkles,
   SlidersHorizontal,
   Image as ImageIcon,
+  Video,
   Check,
   Code2,
   Github,
@@ -41,7 +42,7 @@ import {
   useUpdateAccount,
 } from "@/hooks/mutations/useAccountMutations";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { settingsApi, storageApi, pgpKeysApi, syncApi, authApi, updatesApi, type Account, type AppearanceSettings as AppearanceSettingsType } from "@/lib/api";
+import { settingsApi, storageApi, pgpKeysApi, syncApi, authApi, updatesApi, backgroundMediaApi, type Account, type AppearanceSettings as AppearanceSettingsType } from "@/lib/api";
 import { useAppStore, type ThemeMode } from "@/stores/appStore";
 import { useAppearanceStore, markAppearanceEditing } from "@/stores/appearanceStore";
 import { showToast } from "@/stores/toast.store";
@@ -87,12 +88,41 @@ const FALLBACK_TIMEZONES = [
   "America/Los_Angeles",
 ];
 
+const BACKGROUND_MEDIA_ACCEPT = "image/*,video/mp4,video/webm,video/ogg";
+const BACKGROUND_MEDIA_MAX_BYTES = 50 * 1024 * 1024;
+const BACKGROUND_VIDEO_TYPES = new Set(["video/mp4", "video/webm", "video/ogg"]);
+const BACKGROUND_MEDIA_EXTENSIONS = /\.(jpe?g|png|gif|webp|avif|mp4|webm|ogg|ogv)$/i;
+type BackgroundMediaKey = "bg_image" | "bg_image_mobile";
+type BackgroundUploadState = Partial<Record<BackgroundMediaKey, { percent: number; fileName: string }>>;
+
 function timezoneOptions() {
   const intl = Intl as typeof Intl & {
     supportedValuesOf?: (key: "timeZone") => string[];
   };
   const values = intl.supportedValuesOf?.("timeZone") || FALLBACK_TIMEZONES;
   return Array.from(new Set(["UTC", "Asia/Shanghai", ...values])).sort();
+}
+
+function isBackgroundVideo(src: string) {
+  if (!src) return false;
+  if (/^data:video\//i.test(src)) return true;
+  try {
+    const url = new URL(src, window.location.href);
+    return /\.(mp4|webm|ogg|ogv)$/i.test(url.pathname);
+  } catch {
+    return /\.(mp4|webm|ogg|ogv)(?:[?#].*)?$/i.test(src);
+  }
+}
+
+function formatFileSize(bytes: number) {
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(0)} MB`;
+  return `${Math.ceil(bytes / 1024)} KB`;
+}
+
+function isAllowedBackgroundMediaFile(file: File) {
+  if (file.type.startsWith("image/")) return true;
+  if (BACKGROUND_VIDEO_TYPES.has(file.type)) return true;
+  return BACKGROUND_MEDIA_EXTENSIONS.test(file.name);
 }
 
 export function SettingsView() {
@@ -1466,6 +1496,7 @@ function AppearanceSettings() {
 
   // Appearance store (cloud-synced).
   const appearance = useAppearanceStore();
+  const [backgroundUploads, setBackgroundUploads] = useState<BackgroundUploadState>({});
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editingRef = useRef(false);
 
@@ -1485,6 +1516,72 @@ function AppearanceSettings() {
         onSettled: () => { editingRef.current = false; },
       });
     }, 500);
+  };
+
+  const deleteManagedBackgroundMedia = async (url: string, keepUrl?: string) => {
+    if (!url || url === keepUrl) return;
+    if (!url.startsWith("/api/v1/backgrounds/serve/")) return;
+    try {
+      await backgroundMediaApi.delete(url);
+    } catch {
+      // Non-fatal: the UI setting should not get stuck because an old file
+      // was already removed or the request failed.
+    }
+  };
+
+  const uploadBackgroundMedia = async (
+    file: File | undefined,
+    key: BackgroundMediaKey,
+  ) => {
+    if (!file) return;
+    if (!isAllowedBackgroundMediaFile(file)) {
+      showToast(t("settings.backgroundMediaInvalid"), "error");
+      return;
+    }
+    if (file.size > BACKGROUND_MEDIA_MAX_BYTES) {
+      showToast(
+        t("settings.backgroundMediaTooLarge", {
+          max: formatFileSize(BACKGROUND_MEDIA_MAX_BYTES),
+        }),
+        "error",
+      );
+      return;
+    }
+    const previousUrl = appearance[key];
+    const siblingUrl = key === "bg_image" ? appearance.bg_image_mobile : appearance.bg_image;
+    setBackgroundUploads((current) => ({
+      ...current,
+      [key]: { percent: 0, fileName: file.name },
+    }));
+    try {
+      const res = await backgroundMediaApi.upload(file, (percent) => {
+        setBackgroundUploads((current) => ({
+          ...current,
+          [key]: { percent, fileName: file.name },
+        }));
+      });
+      patchAppearance({ [key]: res.url });
+      await deleteManagedBackgroundMedia(previousUrl, siblingUrl);
+    } catch (err) {
+      showToast(
+        err instanceof Error ? err.message : t("settings.backgroundUploadFailed"),
+        "error",
+      );
+    } finally {
+      window.setTimeout(() => {
+        setBackgroundUploads((current) => {
+          const { [key]: _, ...rest } = current;
+          return rest;
+        });
+      }, 450);
+    }
+  };
+
+  const clearBackgroundMedia = async (key: BackgroundMediaKey) => {
+    const previousUrl = appearance[key];
+    const siblingUrl = key === "bg_image" ? appearance.bg_image_mobile : appearance.bg_image;
+    patchAppearance({ [key]: "" });
+    await deleteManagedBackgroundMedia(previousUrl, siblingUrl);
   };
 
   const themeOptions: { value: ThemeMode; label: string; icon: typeof Sun }[] = [
@@ -1567,13 +1664,18 @@ function AppearanceSettings() {
         </div>
         <SliderSetting label={t("settings.sidebarBlur")} hint={t("settings.sidebarBlurHint")} value={appearance.sidebar_blur} min={0} max={20} step={1} unit="px" onChange={(v) => patchAppearance({ sidebar_blur: v })} />
         <SliderSetting label={t("settings.sidebarOpacity")} hint={t("settings.sidebarOpacityHint")} value={appearance.sidebar_opacity} min={0} max={100} step={5} unit="%" onChange={(v) => patchAppearance({ sidebar_opacity: v })} />
+        <SliderSetting label={t("settings.messageListBlur")} hint={t("settings.messageListBlurHint")} value={appearance.message_list_blur} min={0} max={20} step={1} unit="px" onChange={(v) => patchAppearance({ message_list_blur: v })} />
+        <SliderSetting label={t("settings.messageListOpacity")} hint={t("settings.messageListOpacityHint")} value={appearance.message_list_opacity} min={0} max={100} step={5} unit="%" onChange={(v) => patchAppearance({ message_list_opacity: v })} />
+        <SliderSetting label={t("settings.readingPaneBlur")} hint={t("settings.readingPaneBlurHint")} value={appearance.reading_pane_blur} min={0} max={20} step={1} unit="px" onChange={(v) => patchAppearance({ reading_pane_blur: v })} />
+        <SliderSetting label={t("settings.readingPaneOpacity")} hint={t("settings.readingPaneOpacityHint")} value={appearance.reading_pane_opacity} min={0} max={100} step={5} unit="%" onChange={(v) => patchAppearance({ reading_pane_opacity: v })} />
         <SliderSetting label={t("settings.contentBlur")} hint={t("settings.contentBlurHint")} value={appearance.bg_blur} min={0} max={20} step={1} unit="px" onChange={(v) => patchAppearance({ bg_blur: v })} />
       </div>
 
-      {/* ── Background Image ── */}
+      {/* ── Background media ── */}
       <div className="card-padded space-y-4">
         <div className="flex items-center gap-2.5">
           <ImageIcon size={16} style={{ color: "var(--geist-secondary)" }} />
+          <Video size={16} style={{ color: "var(--geist-secondary)" }} />
           <p className="text-label-14 font-medium">{t("settings.backgroundImage")}</p>
         </div>
         <p className="text-copy-13 text-secondary">{t("settings.backgroundImageDesc")}</p>
@@ -1582,30 +1684,32 @@ function AppearanceSettings() {
         <div className="space-y-2">
           <p className="text-label-13 font-medium">{t("settings.bgImageDesktop")}</p>
           <div className="flex items-center gap-3">
-            <label className="h-8 px-2.5 inline-flex items-center gap-1.5 rounded-geist border text-label-12 cursor-pointer hover:bg-[var(--geist-bg-200)] transition-colors"
+            <label className={cn(
+              "h-8 px-2.5 inline-flex items-center gap-1.5 rounded-geist border text-label-12 cursor-pointer hover:bg-[var(--geist-bg-200)] transition-colors",
+              backgroundUploads.bg_image && "opacity-60 pointer-events-none",
+            )}
               style={{ borderColor: "var(--geist-border)" }}>
               <Upload size={13} />
-              {t("settings.uploadBackground")}
-              <input type="file" accept="image/*" className="hidden" onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (!file) return;
-                const reader = new FileReader();
-                reader.onload = () => patchAppearance({ bg_image: reader.result as string });
-                reader.readAsDataURL(file);
+              {backgroundUploads.bg_image ? t("settings.uploadingBackground") : t("settings.uploadBackground")}
+              <input type="file" accept={BACKGROUND_MEDIA_ACCEPT} className="hidden" onChange={(e) => {
+                void uploadBackgroundMedia(e.target.files?.[0], "bg_image");
                 e.currentTarget.value = "";
               }} />
             </label>
             {appearance.bg_image && (
-              <button onClick={() => patchAppearance({ bg_image: "" })}
+              <button onClick={() => { void clearBackgroundMedia("bg_image"); }}
                 className="h-8 px-2.5 inline-flex items-center gap-1.5 rounded-geist border text-label-12 hover:bg-[var(--geist-bg-200)] transition-colors"
                 style={{ borderColor: "var(--geist-border)", color: "var(--geist-red-500)" }}>
                 <Trash2 size={13} /> {t("settings.clearBackground")}
               </button>
             )}
           </div>
+          {backgroundUploads.bg_image && (
+            <BackgroundUploadProgress upload={backgroundUploads.bg_image} />
+          )}
           {appearance.bg_image && (
             <div className="w-full max-w-[280px] rounded-geist overflow-hidden border" style={{ borderColor: "var(--geist-border)" }}>
-              <img src={appearance.bg_image} alt={t("settings.desktopBackgroundPreview")} className="w-full h-28 object-cover" />
+              <BackgroundMediaPreview src={appearance.bg_image} alt={t("settings.desktopBackgroundPreview")} className="w-full h-28 object-cover" />
             </div>
           )}
         </div>
@@ -1614,30 +1718,32 @@ function AppearanceSettings() {
         <div className="space-y-2">
           <p className="text-label-13 font-medium">{t("settings.bgImageMobile")}</p>
           <div className="flex items-center gap-3">
-            <label className="h-8 px-2.5 inline-flex items-center gap-1.5 rounded-geist border text-label-12 cursor-pointer hover:bg-[var(--geist-bg-200)] transition-colors"
+            <label className={cn(
+              "h-8 px-2.5 inline-flex items-center gap-1.5 rounded-geist border text-label-12 cursor-pointer hover:bg-[var(--geist-bg-200)] transition-colors",
+              backgroundUploads.bg_image_mobile && "opacity-60 pointer-events-none",
+            )}
               style={{ borderColor: "var(--geist-border)" }}>
               <Upload size={13} />
-              {t("settings.uploadBackground")}
-              <input type="file" accept="image/*" className="hidden" onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (!file) return;
-                const reader = new FileReader();
-                reader.onload = () => patchAppearance({ bg_image_mobile: reader.result as string });
-                reader.readAsDataURL(file);
+              {backgroundUploads.bg_image_mobile ? t("settings.uploadingBackground") : t("settings.uploadBackground")}
+              <input type="file" accept={BACKGROUND_MEDIA_ACCEPT} className="hidden" onChange={(e) => {
+                void uploadBackgroundMedia(e.target.files?.[0], "bg_image_mobile");
                 e.currentTarget.value = "";
               }} />
             </label>
             {appearance.bg_image_mobile && (
-              <button onClick={() => patchAppearance({ bg_image_mobile: "" })}
+              <button onClick={() => { void clearBackgroundMedia("bg_image_mobile"); }}
                 className="h-8 px-2.5 inline-flex items-center gap-1.5 rounded-geist border text-label-12 hover:bg-[var(--geist-bg-200)] transition-colors"
                 style={{ borderColor: "var(--geist-border)", color: "var(--geist-red-500)" }}>
                 <Trash2 size={13} /> {t("settings.clearBackground")}
               </button>
             )}
           </div>
+          {backgroundUploads.bg_image_mobile && (
+            <BackgroundUploadProgress upload={backgroundUploads.bg_image_mobile} />
+          )}
           {appearance.bg_image_mobile && (
             <div className="w-full max-w-[160px] rounded-geist overflow-hidden border" style={{ borderColor: "var(--geist-border)" }}>
-              <img src={appearance.bg_image_mobile} alt={t("settings.mobileBackgroundPreview")} className="w-full h-36 object-cover" />
+              <BackgroundMediaPreview src={appearance.bg_image_mobile} alt={t("settings.mobileBackgroundPreview")} className="w-full h-36 object-cover" />
             </div>
           )}
         </div>
@@ -1837,11 +1943,17 @@ function AppearanceSettings() {
         </div>
         <Button variant="secondary" size="small"
           onClick={() => {
+            const desktopBg = appearance.bg_image;
+            const mobileBg = appearance.bg_image_mobile;
             patchAppearance({
               accent_color: "#006bff",
               accent_saturation: 100,
               sidebar_blur: 0,
               sidebar_opacity: 100,
+              message_list_blur: 0,
+              message_list_opacity: 100,
+              reading_pane_blur: 0,
+              reading_pane_opacity: 100,
               bg_blur: 0,
               border_radius: 6,
               font_size: "md",
@@ -1854,6 +1966,12 @@ function AppearanceSettings() {
               text_color_light: "",
               text_color_dark: "",
             });
+            void (desktopBg === mobileBg
+              ? deleteManagedBackgroundMedia(desktopBg)
+              : Promise.allSettled([
+                  deleteManagedBackgroundMedia(desktopBg),
+                  deleteManagedBackgroundMedia(mobileBg),
+                ]));
             showToast(t("settings.saved"), "success");
           }}>
           {t("settings.resetAppearance")}
@@ -1861,6 +1979,54 @@ function AppearanceSettings() {
       </div>
     </div>
   );
+}
+
+function BackgroundUploadProgress({ upload }: { upload: { percent: number; fileName: string } }) {
+  const { t } = useTranslation();
+  const percent = Math.min(100, Math.max(0, upload.percent));
+  return (
+    <div className="w-full max-w-[280px] space-y-1.5">
+      <div className="flex items-center justify-between gap-3 text-label-12 text-secondary">
+        <span className="truncate">{upload.fileName}</span>
+        <span className="shrink-0">
+          {t("settings.uploadProgress", { percent })}
+        </span>
+      </div>
+      <div
+        className="h-1.5 rounded-full overflow-hidden"
+        style={{ backgroundColor: "var(--geist-border)" }}
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={percent}
+      >
+        <div
+          className="h-full rounded-full transition-[width] duration-150"
+          style={{
+            width: `${percent}%`,
+            backgroundColor: "var(--geist-primary)",
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function BackgroundMediaPreview({ src, alt, className }: { src: string; alt: string; className?: string }) {
+  if (isBackgroundVideo(src)) {
+    return (
+      <video
+        src={src}
+        className={className}
+        autoPlay
+        loop
+        muted
+        playsInline
+        aria-label={alt}
+      />
+    );
+  }
+  return <img src={src} alt={alt} className={className} />;
 }
 
 /* ── Reusable slider row ── */

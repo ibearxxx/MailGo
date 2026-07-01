@@ -340,14 +340,19 @@ export function MailFolderView({
           width: isMobile ? "100%" : listWidth,
           minWidth: isMobile ? 0 : breakpoint === "tablet" ? 280 : 320,
           borderColor: "var(--geist-border)",
+          backgroundColor: "var(--mailgo-message-list-bg)",
+          backdropFilter: "var(--mailgo-message-list-backdrop)",
+          WebkitBackdropFilter: "var(--mailgo-message-list-backdrop)",
         }}
       >
         {/* Toolbar */}
         <div
           className="flex items-center gap-2 px-3 h-12 border-b shrink-0"
           style={{
-            backgroundColor: "var(--geist-bg-100)",
+            backgroundColor: "var(--mailgo-message-list-bg)",
             borderColor: "var(--geist-border)",
+            backdropFilter: "var(--mailgo-message-list-backdrop)",
+            WebkitBackdropFilter: "var(--mailgo-message-list-backdrop)",
           }}
         >
           {activeThreadId ? (
@@ -485,7 +490,15 @@ export function MailFolderView({
 
       {/* Detail pane — full-width on mobile when a message is selected */}
       {(!isMobile || showDetail) && (
-      <div className={cn("h-full", isMobile ? "flex-1 min-w-0" : "flex-1 min-w-0")} style={isMobile ? {} : { minWidth: breakpoint === "tablet" ? 280 : 360 }}>
+      <div
+        className={cn("h-full", isMobile ? "flex-1 min-w-0" : "flex-1 min-w-0")}
+        style={{
+          ...(isMobile ? {} : { minWidth: breakpoint === "tablet" ? 280 : 360 }),
+          backgroundColor: "var(--mailgo-reading-pane-bg)",
+          backdropFilter: "var(--mailgo-reading-pane-backdrop)",
+          WebkitBackdropFilter: "var(--mailgo-reading-pane-backdrop)",
+        }}
+      >
         {selectedLocalDraftId ? (
           <LocalDraftPreview
             draftId={selectedLocalDraftId}

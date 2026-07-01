@@ -1,6 +1,7 @@
 package imap
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 )
@@ -66,5 +67,51 @@ MIME-Version: 1.0
 	}
 	if strings.Contains(text, "=E4=BA=B2") {
 		t.Errorf("text contains undecoded QP: %q", text)
+	}
+}
+
+func TestExtractPartsHTMLWithContentIDIsBody(t *testing.T) {
+	htmlBody := `<html><body><h1>Rendered HTML</h1></body></html>`
+	raw := `From: bingwb@microsoft.com
+To: user@example.com
+Subject: HTML with content id
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="mailgo-test"
+
+--mailgo-test
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+<html><body>Plain fallback that is actually HTML</body></html>
+--mailgo-test
+Content-Type: text/html; charset=utf-8
+Content-ID: <body-part@example.com>
+Content-Transfer-Encoding: base64
+
+` + base64.StdEncoding.EncodeToString([]byte(htmlBody)) + `
+--mailgo-test--
+`
+
+	text, html, atts := extractParts(raw)
+	if !strings.Contains(text, "Plain fallback") {
+		t.Fatalf("expected plain fallback, got %q", text)
+	}
+	if !strings.Contains(html, "Rendered HTML") {
+		t.Fatalf("expected HTML body, got %q", html)
+	}
+	if len(atts) != 0 {
+		t.Fatalf("HTML body with Content-ID must not become an attachment: %+v", atts)
+	}
+}
+
+func TestNeedsBodyRepairForHTMLStoredAsText(t *testing.T) {
+	if !needsBodyRepair("<html><body>marketing email</body></html>", "") {
+		t.Fatal("expected HTML stored as text to require repair")
+	}
+	if needsBodyRepair("Use the <html> element in your page.", "") {
+		t.Fatal("ordinary plain text mentioning HTML must not require repair")
+	}
+	if needsBodyRepair("<html><body>already has HTML fallback</body></html>", "<p>rendered</p>") {
+		t.Fatal("message with an HTML body must not require repair")
 	}
 }

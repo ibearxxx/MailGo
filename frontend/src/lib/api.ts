@@ -486,13 +486,19 @@ export interface AppearanceSettings {
   accent_saturation: number;
   sidebar_blur: number;
   sidebar_opacity: number;
+  message_list_blur: number;
+  message_list_opacity: number;
+  reading_pane_blur: number;
+  reading_pane_opacity: number;
   bg_blur: number;
   border_radius: number;
   font_size: "sm" | "md" | "lg";
   compact_mode: boolean;
   shadow_intensity: "none" | "sm" | "md" | "lg";
   animation_speed: "off" | "slow" | "normal" | "fast";
+  /** Desktop background media. Supports image data URLs/URLs and video data URLs/URLs. */
   bg_image: string;
+  /** Mobile background media. Supports image data URLs/URLs and video data URLs/URLs. */
   bg_image_mobile: string;
   bg_opacity: number;
   text_color_light: string;
@@ -504,6 +510,10 @@ export const DEFAULT_APPEARANCE: AppearanceSettings = {
   accent_saturation: 100,
   sidebar_blur: 0,
   sidebar_opacity: 100,
+  message_list_blur: 0,
+  message_list_opacity: 100,
+  reading_pane_blur: 0,
+  reading_pane_opacity: 100,
   bg_blur: 0,
   border_radius: 6,
   font_size: "md",
@@ -562,6 +572,59 @@ export const settingsApi = {
       method: "PUT",
       body: JSON.stringify({ value }),
     });
+  },
+};
+
+export const backgroundMediaApi = {
+  upload: (file: File, onProgress?: (percent: number) => void) =>
+    new Promise<{ url: string; content_type: string }>((resolve, reject) => {
+      const form = new FormData();
+      form.append("file", file);
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `${API_BASE}/backgrounds`);
+
+      xhr.upload.onprogress = (event) => {
+        if (!event.lengthComputable || event.total <= 0) return;
+        onProgress?.(Math.min(99, Math.max(0, Math.round((event.loaded / event.total) * 100))));
+      };
+      xhr.onload = () => {
+        if (xhr.status === 401) {
+          window.dispatchEvent(new Event(AUTH_UNAUTHORIZED_EVENT));
+        }
+        if (xhr.status >= 200 && xhr.status < 300) {
+          onProgress?.(100);
+          try {
+            resolve(JSON.parse(xhr.responseText || "{}") as { url: string; content_type: string });
+          } catch {
+            reject(new Error("Invalid upload response"));
+          }
+          return;
+        }
+        let message = `HTTP ${xhr.status}`;
+        try {
+          const err = JSON.parse(xhr.responseText || "{}") as { error?: string };
+          message = err.error || message;
+        } catch {
+          /* ignore */
+        }
+        reject(new Error(message));
+      };
+      xhr.onerror = () => reject(new Error("Upload failed"));
+      xhr.onabort = () => reject(new Error("Upload canceled"));
+      xhr.send(form);
+    }),
+  delete: async (url: string) => {
+    const match = url.match(/^\/api\/v1\/backgrounds\/serve\/([^/?#]+)$/);
+    if (!match) return;
+    const res = await apiFetch(`${API_BASE}/backgrounds/${encodeURIComponent(match[1])}`, {
+      method: "DELETE",
+    });
+    if (!res.ok && res.status !== 404) {
+      const err = (await res.json().catch(() => ({ error: "Delete failed" }))) as {
+        error?: string;
+      };
+      throw new Error(err.error || `HTTP ${res.status}`);
+    }
   },
 };
 

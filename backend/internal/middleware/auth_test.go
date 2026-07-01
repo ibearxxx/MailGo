@@ -124,6 +124,26 @@ func TestTokenAuthLoginAndProtectedRoute(t *testing.T) {
 		t.Fatalf("cross-site status = %d", crossSiteRecorder.Code)
 	}
 
+	crossOriginRequest := httptest.NewRequest(http.MethodPost, "/api/v1/messages/send", nil)
+	crossOriginRequest.Host = "mailgo.example.com"
+	crossOriginRequest.AddCookie(cookies[0])
+	crossOriginRequest.Header.Set("Origin", "http://evil.example.com")
+	crossOriginRecorder := httptest.NewRecorder()
+	protected.ServeHTTP(crossOriginRecorder, crossOriginRequest)
+	if crossOriginRecorder.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin status = %d", crossOriginRecorder.Code)
+	}
+
+	sameOriginRequest := httptest.NewRequest(http.MethodPost, "/api/v1/messages/send", nil)
+	sameOriginRequest.Host = "mailgo.example.com"
+	sameOriginRequest.AddCookie(cookies[0])
+	sameOriginRequest.Header.Set("Origin", "http://mailgo.example.com")
+	sameOriginRecorder := httptest.NewRecorder()
+	protected.ServeHTTP(sameOriginRecorder, sameOriginRequest)
+	if sameOriginRecorder.Code != http.StatusNoContent {
+		t.Fatalf("same-origin status = %d", sameOriginRecorder.Code)
+	}
+
 	logoutRequest := httptest.NewRequest(http.MethodPost, "/api/v1/auth/logout", nil)
 	logoutRequest.Header.Set("Authorization", "Bearer "+response.Token)
 	logoutRecorder := httptest.NewRecorder()

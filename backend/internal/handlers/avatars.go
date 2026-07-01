@@ -382,11 +382,11 @@ func isUnsafeAvatarDomain(domain string) bool {
 }
 
 func avatarCacheDir() (string, error) {
-	home, err := os.UserHomeDir()
+	base, err := mailgoDataDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".mailgo", "avatar-cache"), nil
+	return filepath.Join(base, "avatar-cache"), nil
 }
 
 func hashString(value string) string {
@@ -424,11 +424,11 @@ func writeAvatarResponse(w http.ResponseWriter, data []byte, contentType string)
 
 // avatarStoreDir returns the directory where permanently-stored avatars live.
 func avatarStoreDir() (string, error) {
-	home, err := os.UserHomeDir()
+	base, err := mailgoDataDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".mailgo", "avatars"), nil
+	return filepath.Join(base, "avatars"), nil
 }
 
 // FetchAvatar downloads an avatar for the given domain or email and stores it
