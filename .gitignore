@@ -55,6 +55,7 @@ docker-compose.override.yml
 
 # Windows build script
 build.bat
+push-release.ps1
 # Local remote-development deployment helper
 deploy_dev.py
 __pycache__/deploy_dev.cpython-313.pyc
