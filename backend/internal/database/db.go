@@ -45,6 +45,7 @@ func Initialize() error {
 		ReadTimeout:  60 * time.Second,
 		WriteTimeout: 60 * time.Second,
 		Collation:    "utf8mb4_unicode_ci",
+		AllowNativePasswords: true,
 	}
 
 	// First connect without database to create it if needed.
